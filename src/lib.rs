@@ -32,8 +32,21 @@ const DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS: u64 = 100;
 const DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS: u64 = 1000;
 
 /// Represents `kube-lease` specific errors.
-#[derive(thiserror::Error, Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum LeaseError {}
+#[derive(thiserror::Error, Debug)]
+pub enum LeaseError {
+    #[error("Kube error: {0}")]
+    KubeError(
+        #[source]
+        #[from]
+        kube::Error,
+    ),
+
+    #[error("lock conflict detected with identity {0}")]
+    LockConflict(String),
+
+    #[error("inconsistent kube-lease state detected: {0}")]
+    InconsistentState(String),
+}
 
 /// Parameters of LeaseManager.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -148,30 +161,49 @@ impl LeaseState {
     /// Retrieve actual state from the cluster.
     async fn sync(&mut self, opts: LeaseLockOpts) -> Result<()> {
         if opts == LeaseLockOpts::Force || self.is_expired() {
-            let lease = self.api.get(&self.lease_name).await.unwrap().spec.unwrap();
+            let result = self.api.get(&self.lease_name).await;
 
-            self.holder = lease.holder_identity;
-            self.transitions = lease.lease_transitions.unwrap_or(0);
-            self.expiry = {
-                let renew = lease.renew_time;
-                let duration = lease.lease_duration_seconds.map(|d| Duration::from_secs(d as u64));
+            // If Lease doesn't exist - clear state before exiting
+            if let Err(kube::Error::Api(err)) = &result {
+                if err.code == 404 {
+                    self.holder = None;
+                    self.transitions = 0;
+                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
 
-                if renew.is_some() && duration.is_some() {
-                    let renew: SystemTime = renew.unwrap().0.into();
-                    let duration: Duration = duration.unwrap();
-
-                    renew + duration
-                } else {
-                    SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
+                    return Err(LeaseError::from(result.err().unwrap()));
                 }
-            };
+            }
+
+            // If success or non-404 - try to unwrap spec and do sync
+            if let Some(lease) = result?.spec {
+                self.holder = lease.holder_identity;
+                self.transitions = lease.lease_transitions.unwrap_or(0);
+                self.expiry = {
+                    let renew = lease.renew_time;
+                    let duration = lease.lease_duration_seconds.map(|d| Duration::from_secs(d as u64));
+
+                    if renew.is_some() && duration.is_some() {
+                        let renew: SystemTime = renew.unwrap().0.into();
+                        let duration: Duration = duration.unwrap();
+
+                        renew + duration
+                    } else {
+                        SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
+                    }
+                };
+            } else {
+                // Empty spec in the Lease
+                self.holder = None;
+                self.transitions = 0;
+                self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+            }
         }
 
         Ok(())
     }
 
     async fn lock(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<()> {
-        self.sync(LeaseLockOpts::Soft).await.unwrap();
+        self.sync(LeaseLockOpts::Soft).await?;
 
         let lease_duration_seconds = params.duration.as_secs();
         let now: DateTime<Utc> = SystemTime::now().into();
@@ -220,12 +252,12 @@ impl LeaseState {
             return Ok(());
         };
 
-        self.patch(params, &patch).await.unwrap();
+        self.patch(params, &patch).await?;
         self.sync(LeaseLockOpts::Force).await
     }
 
     async fn release(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<()> {
-        self.sync(LeaseLockOpts::Soft).await.unwrap();
+        self.sync(LeaseLockOpts::Soft).await?;
 
         if self.is_holder(&params.identity) || self.is_expired() || opts == LeaseLockOpts::Force {
             debug!(?params, ?opts, "release lock");
@@ -241,7 +273,7 @@ impl LeaseState {
                 }
             });
             let patch = Patch::Strategic(patch);
-            self.patch(params, &patch).await.unwrap();
+            self.patch(params, &patch).await?;
         }
 
         self.sync(LeaseLockOpts::Force).await
@@ -259,7 +291,7 @@ impl LeaseState {
             ..Default::default()
         };
 
-        self.api.patch(&self.lease_name, &params, patch).await.unwrap();
+        self.api.patch(&self.lease_name, &params, patch).await?;
 
         Ok(())
     }
@@ -275,14 +307,14 @@ impl LeaseState {
             spec: Default::default(),
         };
 
-        let lease = self.api.create(&pp, &data).await.unwrap();
+        let lease = self.api.create(&pp, &data).await?;
         Ok(lease)
     }
 
     #[allow(dead_code)]
     async fn delete(&self) -> Result<()> {
         let dp = DeleteParams::default();
-        let _ = self.api.delete(&self.lease_name, &dp).await.unwrap();
+        let _ = self.api.delete(&self.lease_name, &dp).await?;
 
         Ok(())
     }
@@ -297,56 +329,66 @@ impl LeaseManager {
         }
     }
 
-    /// Task which tries to lock lease and renews it periodically.
-    pub async fn watch(&mut self) {
+    /// Try to lock lease and renew it periodically. Returns leader status as soon as it was changed.
+    pub async fn changed(&mut self) -> Result<bool> {
         loop {
-            // re-sync state if needed
-            self.state.sync(LeaseLockOpts::Soft).await.unwrap();
-
-            if self.state.is_holder(&self.params.identity) {
-                // if we're holder of the lock - sleep up to the next refresh time,
-                // and renew lock (lock it softly)
-                self.sleep_with_grace(self.params.grace).await;
-
-                debug!("renew own lease lock");
-                self.state.lock(&self.params, LeaseLockOpts::Soft).await.unwrap();
-            } else if !self.state.is_locked() {
-                // Lease isn't locket yet
-                debug!("try to lock lease");
-                self.state.lock(&self.params, LeaseLockOpts::Soft).await.unwrap();
-            } else if self.state.is_locked() && self.state.is_expired() {
-                // It's locked by someone else but lock is already expired.
-                // Release it by force and try to lock on the next loop cycle
-                debug!("release expired lease lock");
-                self.state.release(&self.params, LeaseLockOpts::Force).await.unwrap();
-
-                // Sleep some random time (up to 500ms) to minimize collisions probability
-                tokio::time::sleep(random_duration(
-                    DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS,
-                    DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS,
-                ))
-                .await;
-            } else if self.state.is_locked() && !self.state.is_expired() {
-                // It's locked by someone else and lock is actual.
-                // Sleep up to the expiration time of the lock.
-                debug!(
-                    holder = self.state.holder.as_ref().unwrap(),
-                    "lease is actually locked by other identity"
-                );
-                self.sleep_with_grace(Duration::ZERO).await;
-            } else {
-                // Something wrong happened
-                error!(?self, "unreachable branch, looks like a BUG!");
-                unreachable!("it's impossible to reach this branch, looks like a BUG!");
-            }
-
             // Is leader changed after this iteration?
             let is_holder = self.state.is_holder(&self.params.identity);
             if self.is_leader.load(Ordering::Acquire) != is_holder {
                 debug!(leader = is_holder, "lease lock state has been changed");
                 self.is_leader.store(is_holder, Ordering::Release);
-                // TODO: inform around using watch channel or/and callback
+
+                return Ok(is_holder);
             }
+
+            // Make single iteration, if no changes so far
+            self.watcher_step().await?;
+        }
+    }
+
+    async fn watcher_step(&mut self) -> Result<()> {
+        // re-sync state if needed
+        self.state.sync(LeaseLockOpts::Soft).await?;
+
+        if self.state.is_holder(&self.params.identity) {
+            // if we're holder of the lock - sleep up to the next refresh time,
+            // and renew lock (lock it softly)
+            self.sleep_with_grace(self.params.grace).await;
+
+            debug!("renew own lease lock");
+            self.state.lock(&self.params, LeaseLockOpts::Soft).await
+        } else if !self.state.is_locked() {
+            // Lease isn't locket yet
+            debug!("try to lock lease");
+            self.state.lock(&self.params, LeaseLockOpts::Soft).await
+        } else if self.state.is_locked() && self.state.is_expired() {
+            // It's locked by someone else but lock is already expired.
+            // Release it by force and try to lock on the next loop cycle
+            debug!("release expired lease lock");
+            let res = self.state.release(&self.params, LeaseLockOpts::Force).await;
+
+            // Sleep some random time (up to 500ms) to minimize collisions probability
+            tokio::time::sleep(random_duration(
+                DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS,
+                DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS,
+            ))
+            .await;
+            res
+        } else if self.state.is_locked() && !self.state.is_expired() {
+            // It's locked by someone else and lock is actual.
+            // Sleep up to the expiration time of the lock.
+            debug!(
+                holder = self.state.holder.as_ref().unwrap(),
+                "lease is actually locked by other identity"
+            );
+            self.sleep_with_grace(Duration::ZERO).await;
+            Ok(())
+        } else {
+            // Something wrong happened
+            error!(?self, "unreachable branch, looks like a BUG!");
+            Err(LeaseError::InconsistentState(
+                "unreachable branch, looks like a BUG!".into(),
+            ))
         }
     }
 
@@ -756,5 +798,22 @@ mod tests {
             "at least 80% of randoms should be unique, but got {}%",
             set.len()
         );
+    }
+
+    #[tokio::test]
+    async fn deleted_lease_state() {
+        const LEASE_NAME: &str = "deleted-lease-state-test";
+
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 1).await;
+
+        let _ = states[0].lock(&params[0], LeaseLockOpts::Soft).await;
+        states[0].delete().await.unwrap();
+
+        let result = states[0].sync(LeaseLockOpts::Force).await;
+        assert!(result.is_err());
+        assert!(matches!(result.err().unwrap(), LeaseError::KubeError(kube::Error::Api(err)) if err.code==404));
+        assert!(states[0].holder.is_none());
+        assert_eq!(states[0].transitions, 0);
+        assert!(states[0].is_expired());
     }
 }

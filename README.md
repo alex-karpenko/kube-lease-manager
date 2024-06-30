@@ -1,2 +1,2 @@
 # kube-lease
-Wrapper for Kubernetes Lease API, siplifies leader election.
+Leader election using Kubernetes Lease API.
