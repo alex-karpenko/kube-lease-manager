@@ -1,0 +1,39 @@
+[package]
+name = "kube-lease"
+authors = ["Oleksii Karpenko <alexkarpenko@yahoo.com>"]
+categories = ["api-bindings", "asynchronous"]
+description = "Leader election using Kubernetes Lease API."
+edition = "2021"
+rust-version = "1.75"
+homepage = "https://github.com/alex-karpenko/kube-lease"
+keywords = ["kubernetes", "async", "lease", "leader", "election"]
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/alex-karpenko/kube-lease"
+version = "0.1.0"
+exclude = [
+    ".github/**",
+    ".vscode/**",
+    "TODO.md",
+    "Cargo.lock",
+    "target/**",
+    ".gitignore",
+]
+
+[dependencies]
+k8s-openapi = { version = "0.22.0", features = ["v1_26"] }
+kube = { version = "0.92.1", default-features = false, features = ["client"] }
+rand = { version = "0.8.5" }
+thiserror = "1.0.61"
+tokio = { version = "1.38.0", default-features = false, features = [
+    "sync",
+    "time",
+] }
+tracing = { version = "0.1.40", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+kube = { version = "0.92.1", default-features = false, features = [
+    "rustls-tls",
+] }
+tokio = { version = "1.38.0", default-features = false, features = ["macros"] }
+tracing-subscriber = { version = "0.3.18" }
