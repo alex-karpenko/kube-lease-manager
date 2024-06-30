@@ -1,12 +1,11 @@
 name: Code coverage report
 on:
-  pull_request:
-  push:
-    branches:
-      - main
-      - rel-v*
-  schedule:
-    - cron: "0 8 * * 5"
+  workflow_dispatch:
+  # pull_request:
+  # push:
+  #   branches:
+  #     - main
+  #     - rel-v*
 
 env:
   CARGO_TERM_COLOR: always
@@ -23,15 +22,21 @@ jobs:
           rustup toolchain add nightly --component llvm-tools-preview
           rustup override set nightly
 
+      - uses: Swatinem/rust-cache@v2
+      - uses: nolar/setup-k3d-k3s@v1
+        with:
+          version: latest
+          k3d-name: kube
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
+
       - name: Test
         env:
           CI: true
           RUSTFLAGS: -Cinstrument-coverage
           LLVM_PROFILE_FILE: kube-lease-%p-%m.profraw
           RUST_LOG: debug
-        run: |
-          cargo build
-          cargo test
+        run: cargo test --lib --all -- --include-ignored
 
       - name: Generate coverage
         run: |

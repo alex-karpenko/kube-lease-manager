@@ -1,11 +1,12 @@
 name: Continuous integration
 on:
+  workflow_dispatch:
   pull_request:
   schedule:
-    - cron: "0 9 * * 5"
-
+    - cron: "30 16 * * 5"
 env:
   CARGO_TERM_COLOR: always
+  CI: true
 
 jobs:
   ci:
@@ -16,6 +17,9 @@ jobs:
           - stable
           - beta
           - 1.75.0
+        k8s:
+          - v1.26
+          - latest
 
     steps:
       - uses: actions/checkout@v4
@@ -25,17 +29,22 @@ jobs:
           toolchain: ${{ matrix.rust }}
           components: rustfmt,clippy
 
-      - name: Build
-        run: cargo build
-
-      - name: Test
-        env:
-          CI: true
-        run: cargo test
+      - uses: Swatinem/rust-cache@v2
+      - uses: nolar/setup-k3d-k3s@v1
+        with:
+          version: ${{matrix.k8s}}
+          k3d-name: kube
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
 
       - name: Fmt
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: |
-          cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Build
+        run: cargo build
+
+      - name: Test
+        run: cargo test --lib --all -- --include-ignored
