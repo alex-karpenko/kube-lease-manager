@@ -41,8 +41,8 @@ pub enum LeaseError {
         kube::Error,
     ),
 
-    #[error("lock conflict detected with identity {0}")]
-    LockConflict(String),
+    #[error("lock conflict detected")]
+    LockConflict,
 
     #[error("inconsistent kube-lease state detected: {0}")]
     InconsistentState(String),
@@ -233,9 +233,9 @@ impl LeaseState {
                     "leaseTransitions": self.transitions + 1,
                 },
             });
-            Patch::Strategic(patch)
+            Patch::Apply(patch)
         } else if opts == LeaseLockOpts::Force {
-            // if it's locked by someone else - try to lock it with force
+            // if it's locked by someone else but force is requested - try to lock it with force
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
@@ -247,12 +247,12 @@ impl LeaseState {
                     "leaseTransitions": self.transitions + 1,
                 },
             });
-            Patch::Apply(patch)
+            Patch::Strategic(patch)
         } else {
             return Ok(());
         };
 
-        self.patch(params, &patch).await?;
+        self.patch(params, &patch, false).await?;
         self.sync(LeaseLockOpts::Force).await
     }
 
@@ -264,6 +264,9 @@ impl LeaseState {
 
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
+                "metadata": {
+                    "managedFields": [{}],
+                },
                 "kind": "Lease",
                 "spec": {
                     "acquireTime": Option::<()>::None,
@@ -272,14 +275,15 @@ impl LeaseState {
                     "leaseDurationSeconds": Option::<()>::None,
                 }
             });
+
             let patch = Patch::Strategic(patch);
-            self.patch(params, &patch).await?;
+            self.patch(params, &patch, false).await?;
         }
 
         self.sync(LeaseLockOpts::Force).await
     }
 
-    async fn patch<P>(&self, params: &LeaseParams, patch: &Patch<P>) -> Result<()>
+    async fn patch<P>(&self, params: &LeaseParams, patch: &Patch<P>, force: bool) -> Result<()>
     where
         P: Serialize + Debug,
     {
@@ -287,13 +291,15 @@ impl LeaseState {
 
         let params = PatchParams {
             field_manager: Some(params.field_manager()),
-            force: matches!(patch, Patch::Apply(_)),
+            force,
             ..Default::default()
         };
 
-        self.api.patch(&self.lease_name, &params, patch).await?;
-
-        Ok(())
+        match self.api.patch(&self.lease_name, &params, patch).await {
+            Ok(_) => Ok(()),
+            Err(kube::Error::Api(err)) if err.reason == "Conflict" && err.code == 409 => Err(LeaseError::LockConflict),
+            Err(err) => Err(LeaseError::KubeError(err)),
+        }
     }
 
     #[allow(dead_code)]
@@ -307,8 +313,7 @@ impl LeaseState {
             spec: Default::default(),
         };
 
-        let lease = self.api.create(&pp, &data).await?;
-        Ok(lease)
+        Ok(self.api.create(&pp, &data).await?)
     }
 
     #[allow(dead_code)]
@@ -335,7 +340,7 @@ impl LeaseManager {
             // Is leader changed after this iteration?
             let is_holder = self.state.is_holder(&self.params.identity);
             if self.is_leader.load(Ordering::Acquire) != is_holder {
-                debug!(leader = is_holder, "lease lock state has been changed");
+                debug!(identity = %self.params.identity, is_leader = is_holder, "lease lock state has been changed");
                 self.is_leader.store(is_holder, Ordering::Release);
 
                 return Ok(is_holder);
@@ -353,18 +358,18 @@ impl LeaseManager {
         if self.state.is_holder(&self.params.identity) {
             // if we're holder of the lock - sleep up to the next refresh time,
             // and renew lock (lock it softly)
-            self.sleep_with_grace(self.params.grace).await;
+            tokio::time::sleep(self.grace_sleep_duration(self.params.grace)).await;
 
-            debug!("renew own lease lock");
+            debug!(identity = %self.params.identity, "renew own lease lock");
             self.state.lock(&self.params, LeaseLockOpts::Soft).await
         } else if !self.state.is_locked() {
             // Lease isn't locket yet
-            debug!("try to lock lease");
+            debug!(identity = %self.params.identity, "try to lock lease");
             self.state.lock(&self.params, LeaseLockOpts::Soft).await
         } else if self.state.is_locked() && self.state.is_expired() {
             // It's locked by someone else but lock is already expired.
             // Release it by force and try to lock on the next loop cycle
-            debug!("release expired lease lock");
+            debug!(identity = %self.params.identity, "release expired lease lock");
             let res = self.state.release(&self.params, LeaseLockOpts::Force).await;
 
             // Sleep some random time (up to 500ms) to minimize collisions probability
@@ -378,10 +383,10 @@ impl LeaseManager {
             // It's locked by someone else and lock is actual.
             // Sleep up to the expiration time of the lock.
             debug!(
-                holder = self.state.holder.as_ref().unwrap(),
+                identity = %self.params.identity, holder = self.state.holder.as_ref().unwrap(),
                 "lease is actually locked by other identity"
             );
-            self.sleep_with_grace(Duration::ZERO).await;
+            tokio::time::sleep(self.grace_sleep_duration(Duration::ZERO)).await;
             Ok(())
         } else {
             // Something wrong happened
@@ -392,15 +397,12 @@ impl LeaseManager {
         }
     }
 
-    async fn sleep_with_grace(&self, grace: Duration) {
-        let wait_for = self
-            .state
+    fn grace_sleep_duration(&self, grace: Duration) -> Duration {
+        self.state
             .expiry
             .duration_since(SystemTime::now())
             .unwrap_or(Duration::ZERO)
-            .saturating_sub(grace);
-
-        tokio::time::sleep(wait_for).await;
+            .saturating_sub(grace)
     }
 }
 
@@ -419,12 +421,11 @@ fn random_string(len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
-
     use super::*;
     use k8s_openapi::api::{coordination::v1::LeaseSpec, core::v1::Namespace};
     use kube::Resource as _;
-    use tokio::sync::OnceCell;
+    use std::collections::HashSet;
+    use tokio::{select, sync::OnceCell};
 
     const TEST_NAMESPACE: &str = "kube-lease-test";
 
@@ -478,6 +479,28 @@ mod tests {
         let _ = states[0].create().await.unwrap();
 
         (params, states)
+    }
+
+    async fn setup_simple_managers_vec(lease_name: &str, count: usize) -> Vec<LeaseManager> {
+        const LEASE_DURATION_SECONDS: u64 = 2;
+        const LEASE_GRACE_SECONDS: u64 = 1;
+
+        let client = init().await;
+        let mut managers = vec![];
+
+        for i in 0..count {
+            let param = LeaseParams::new(
+                format!("leader-{i}"),
+                Duration::from_secs(LEASE_DURATION_SECONDS),
+                Duration::from_secs(LEASE_GRACE_SECONDS),
+            );
+            let manager = LeaseManager::new(client.clone(), lease_name, TEST_NAMESPACE, param);
+            managers.push(manager);
+        }
+
+        // Create lease
+        let _ = managers[0].state.create().await.unwrap();
+        managers
     }
 
     #[test]
@@ -806,7 +829,7 @@ mod tests {
 
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 1).await;
 
-        let _ = states[0].lock(&params[0], LeaseLockOpts::Soft).await;
+        states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
         states[0].delete().await.unwrap();
 
         let result = states[0].sync(LeaseLockOpts::Force).await;
@@ -815,5 +838,167 @@ mod tests {
         assert!(states[0].holder.is_none());
         assert_eq!(states[0].transitions, 0);
         assert!(states[0].is_expired());
+    }
+
+    #[tokio::test]
+    async fn update_lease_with_conflict() {
+        const LEASE_NAME: &str = "update-lease-with-conflict-test";
+
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
+
+        // Lock lease ordinary
+        states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
+        states[1].sync(LeaseLockOpts::Force).await.unwrap();
+
+        // if lock is orphan - try to lock it softly
+        let now: DateTime<Utc> = SystemTime::now().into();
+        let patch = serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "spec": {
+                "acquireTime": MicroTime(now),
+                "renewTime": MicroTime(now),
+                "holderIdentity": params[1].identity,
+                "leaseDurationSeconds": params[1].duration.as_secs(),
+                "leaseTransitions": states[1].transitions + 1,
+            },
+        });
+
+        let patch = Patch::Apply(patch);
+        let result = states[1].patch(&params[1], &patch, false).await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(LeaseError::LockConflict)));
+
+        states[0].delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn grace_sleep_duration() {
+        let client = Client::try_default().await.unwrap();
+        let mut manager = LeaseManager::new(client, "lease_name", "namespace", LeaseParams::default());
+
+        // Already expired - always ZERO
+        manager.state.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+        assert_eq!(
+            manager.grace_sleep_duration(Duration::ZERO),
+            Duration::ZERO,
+            "should be ZERO since it's already expired"
+        );
+        assert_eq!(
+            manager.grace_sleep_duration(Duration::from_secs(1)),
+            Duration::ZERO,
+            "should be ZERO since it's already expired"
+        );
+
+        // Expires in 10s
+        manager.state.expiry = SystemTime::now().checked_add(Duration::from_secs(10)).unwrap();
+        let duration = manager.grace_sleep_duration(Duration::ZERO);
+        assert!(
+            duration >= Duration::from_millis(9_900) && duration <= Duration::from_millis(10_000),
+            "should be around 10s"
+        );
+        let duration = manager.grace_sleep_duration(Duration::from_secs(1));
+        assert!(
+            duration >= Duration::from_millis(8_900) && duration <= Duration::from_millis(9_000),
+            "should be around 9s"
+        );
+        assert_eq!(
+            manager.grace_sleep_duration(Duration::from_secs(10)),
+            Duration::ZERO,
+            "should be around ZERO"
+        );
+    }
+
+    #[tokio::test]
+    async fn single_manager_watcher_step() {
+        const LEASE_NAME: &str = "single-manager-watcher-step-test";
+
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
+        assert!(!managers[0].is_leader.load(Ordering::Relaxed));
+        assert!(!managers[0].state.is_holder(&managers[0].params.identity));
+        assert!(!managers[0].state.is_locked());
+
+        managers[0].watcher_step().await.unwrap();
+        assert!(!managers[0].is_leader.load(Ordering::Relaxed));
+        assert!(managers[0].state.is_holder(&managers[0].params.identity));
+        assert!(managers[0].state.is_locked());
+        assert!(!managers[0].state.is_expired());
+
+        // Expire
+        tokio::time::sleep(managers[0].params.duration).await;
+        assert!(!managers[0].is_leader.load(Ordering::Relaxed));
+        assert!(managers[0].state.is_holder(&managers[0].params.identity));
+        assert!(managers[0].state.is_locked());
+        assert!(managers[0].state.is_expired());
+
+        // Clean up
+        managers[0].state.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn single_manager_changed_loop() {
+        const LEASE_NAME: &str = "single-manager-changed-loop-test";
+
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
+        assert!(!managers[0].is_leader.load(Ordering::Relaxed));
+
+        let is_leader = managers[0].changed().await.unwrap();
+        assert!(is_leader);
+        assert!(managers[0].is_leader.load(Ordering::Relaxed));
+
+        let long_duration = managers[0].params.duration.checked_mul(2).unwrap();
+        select! {
+             _ = managers[0].changed() => {
+                unreachable!("unreachable branch since `changed` loop should lasts forever")
+             },
+             _ = tokio::time::sleep(long_duration) => {
+                assert!(managers[0].is_leader.load(Ordering::Relaxed))
+            }
+        }
+        assert!(managers[0].is_leader.load(Ordering::Relaxed));
+
+        // Clean up
+        managers[0].state.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_managers_1st_expire_then_2nd_lock() {
+        const LEASE_NAME: &str = "two-managers-1st-expire-then-2nd-lock-test";
+
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
+        let mut manager0 = managers.pop().unwrap();
+        let mut manager1 = managers.pop().unwrap();
+
+        assert!(!manager0.is_leader.load(Ordering::Relaxed));
+
+        // Lock by 1st
+        let is_leader = manager0.changed().await.unwrap();
+        assert!(is_leader);
+        assert!(manager0.is_leader.load(Ordering::Relaxed));
+        assert!(!manager1.is_leader.load(Ordering::Relaxed));
+
+        // Try to hold lock by 1st
+        let long_duration = manager0.params.duration.checked_mul(2).unwrap();
+        select! {
+            biased;
+             _ = manager0.changed() => {
+                unreachable!("unreachable branch since `changed` loop should lasts forever")
+             },
+             _ = manager1.changed() => {
+                unreachable!("unreachable branch since `changed` loop should lasts forever")
+             },
+             _ = tokio::time::sleep(long_duration) => {
+                assert!(manager0.is_leader.load(Ordering::Relaxed));
+                assert!(!manager1.is_leader.load(Ordering::Relaxed));
+            }
+        }
+        assert!(manager0.is_leader.load(Ordering::Relaxed));
+        assert!(!manager1.is_leader.load(Ordering::Relaxed));
+
+        // Expire and try to re-lock by 2nd
+        tokio::time::sleep(manager0.params.duration).await;
+
+        // Clean up
+        manager0.state.delete().await.unwrap();
     }
 }
