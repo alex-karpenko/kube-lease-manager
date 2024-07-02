@@ -26,7 +26,7 @@ pub const DEFAULT_LEASE_DURATION_SECONDS: u64 = 30;
 pub const DEFAULT_LEASE_GRACE_SECONDS: u64 = 5;
 
 const DEFAULT_RANDOM_IDENTITY_LEN: usize = 32;
-const DEFAULT_FIELD_MANAGER_PREFIX: &str = "kube-lease-";
+const DEFAULT_FIELD_MANAGER_PREFIX: &str = env!("CARGO_PKG_NAME");
 
 const DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS: u64 = 100;
 const DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS: u64 = 1000;
@@ -122,7 +122,7 @@ impl LeaseParams {
     }
 
     fn field_manager(&self) -> String {
-        format!("{DEFAULT_FIELD_MANAGER_PREFIX}{}", self.identity)
+        format!("{DEFAULT_FIELD_MANAGER_PREFIX}-{}", self.identity)
     }
 }
 
@@ -187,7 +187,7 @@ impl LeaseState {
                         let renew: SystemTime = renew.unwrap().0.into();
                         let duration: Duration = duration.unwrap();
 
-                        renew + duration
+                        renew.checked_add(duration).unwrap()
                     } else {
                         SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
                     }
@@ -335,6 +335,9 @@ impl LeaseManager {
     /// Try to lock lease and renew it periodically. Returns leader status as soon as it was changed.
     pub async fn changed(&mut self) -> Result<bool> {
         loop {
+            // re-sync state if needed
+            self.state.sync(LeaseLockOpts::Soft).await?;
+
             // Is leader changed after this iteration?
             let is_holder = self.state.is_holder(&self.params.identity);
             if self.is_leader.load(Ordering::Acquire) != is_holder {
@@ -350,9 +353,6 @@ impl LeaseManager {
     }
 
     async fn watcher_step(&mut self) -> Result<()> {
-        // re-sync state if needed
-        self.state.sync(LeaseLockOpts::Soft).await?;
-
         if self.state.is_holder(&self.params.identity) {
             // if we're holder of the lock - sleep up to the next refresh time,
             // and renew lock (lock it softly)
@@ -420,6 +420,7 @@ fn random_string(len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::future::select_all;
     use k8s_openapi::api::{coordination::v1::LeaseSpec, core::v1::Namespace};
     use kube::Resource as _;
     use std::collections::HashSet;
@@ -974,5 +975,71 @@ mod tests {
 
         // Clean up
         manager0.state.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn many_managers_1st_expire_then_someone_lock() {
+        const LEASE_NAME: &str = "many-managers-1st-expire-then-someone-lock-test";
+        const MANAGERS: usize = 100;
+
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, MANAGERS).await;
+
+        for manager in &managers {
+            assert!(!manager.is_leader.load(Ordering::Relaxed));
+        }
+
+        // Lock by 1st
+        let is_leader = managers[0].changed().await.unwrap();
+        assert!(is_leader);
+        for (i, manager) in managers.iter().enumerate() {
+            assert_eq!(
+                i == 0,
+                manager.is_leader.load(Ordering::Relaxed),
+                "Locked by incorrect manager"
+            );
+        }
+
+        // Try to hold lock by 1st
+        let long_duration = managers[0].params.duration.checked_mul(2).unwrap();
+        {
+            let managers_fut: Vec<_> = managers.iter_mut().map(|m| Box::pin(m.changed())).collect();
+            select! {
+                _ = tokio::time::sleep(long_duration) => {},
+                _ = select_all(managers_fut) => {
+                    unreachable!("unreachable branch since `changed` loop should lasts forever")
+                }
+            }
+            for (i, manager) in managers.iter().enumerate() {
+                assert_eq!(i == 0, manager.is_leader.load(Ordering::Relaxed));
+            }
+        }
+        // Expire it
+        tokio::time::sleep(
+            managers[0]
+                .params
+                .duration
+                .checked_add(Duration::from_millis(100))
+                .unwrap(),
+        )
+        .await;
+        // Try to re-lock by someone else (exclude 1st form loop)
+        {
+            let managers_fut: Vec<_> = managers.iter_mut().skip(1).map(|m| Box::pin(m.changed())).collect();
+            let (result, index, _) = select_all(managers_fut).await;
+            assert!(result.unwrap());
+            // Assert that only one holds lock
+            for (i, manager) in managers.iter().skip(1).enumerate() {
+                assert_eq!(
+                    i == index,
+                    manager.is_leader.load(Ordering::Relaxed),
+                    "Locked by incorrect manager"
+                );
+            }
+            // Assert that 1st lost lock
+            assert!(!managers[0].changed().await.unwrap());
+        }
+
+        // Clean up
+        managers[0].state.delete().await.unwrap();
     }
 }
