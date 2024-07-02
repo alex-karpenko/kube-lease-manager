@@ -175,7 +175,8 @@ impl LeaseState {
             }
 
             // If success or non-404 - try to unwrap spec and do sync
-            if let Some(lease) = result?.spec {
+            let result = result?;
+            if let Some(lease) = result.spec {
                 self.holder = lease.holder_identity;
                 self.transitions = lease.lease_transitions.unwrap_or(0);
                 self.expiry = {
@@ -197,6 +198,7 @@ impl LeaseState {
                 self.transitions = 0;
                 self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
             }
+            self.version = result.metadata.resource_version;
         }
 
         Ok(())
@@ -252,7 +254,7 @@ impl LeaseState {
             return Ok(());
         };
 
-        self.patch(params, &patch, false).await?;
+        self.patch(params, &patch).await?;
         self.sync(LeaseLockOpts::Force).await
     }
 
@@ -277,13 +279,13 @@ impl LeaseState {
             });
 
             let patch = Patch::Strategic(patch);
-            self.patch(params, &patch, false).await?;
+            self.patch(params, &patch).await?;
         }
 
         self.sync(LeaseLockOpts::Force).await
     }
 
-    async fn patch<P>(&self, params: &LeaseParams, patch: &Patch<P>, force: bool) -> Result<()>
+    async fn patch<P>(&self, params: &LeaseParams, patch: &Patch<P>) -> Result<()>
     where
         P: Serialize + Debug,
     {
@@ -291,7 +293,7 @@ impl LeaseState {
 
         let params = PatchParams {
             field_manager: Some(params.field_manager()),
-            force,
+            force: matches!(patch, Patch::Apply(_)),
             ..Default::default()
         };
 
@@ -777,17 +779,20 @@ mod tests {
 
         // Try to lock by 2nd and 1st
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
-        states[1].lock(&params[1], LeaseLockOpts::Force).await.unwrap();
+        states[1].lock(&params[1], LeaseLockOpts::Soft).await.unwrap();
+        let res = states[1].lock(&params[1], LeaseLockOpts::Force).await;
         states[0].sync(LeaseLockOpts::Force).await.unwrap();
 
         assert!(states[0].is_locked());
-        assert!(!states[0].is_holder(&params[0].identity));
+        assert!(states[0].is_holder(&params[0].identity));
         assert!(!states[0].is_expired());
 
         assert!(states[1].is_locked());
-        assert!(states[1].is_holder(&params[1].identity));
-        assert!(!states[1].is_holder(&params[0].identity));
+        assert!(!states[1].is_holder(&params[1].identity));
+        assert!(states[1].is_holder(&params[0].identity));
         assert!(!states[1].is_expired());
+        assert!(res.is_err());
+        assert!(matches!(res, Err(LeaseError::LockConflict)));
 
         states[0].delete().await.unwrap();
     }
@@ -838,38 +843,6 @@ mod tests {
         assert!(states[0].holder.is_none());
         assert_eq!(states[0].transitions, 0);
         assert!(states[0].is_expired());
-    }
-
-    #[tokio::test]
-    async fn update_lease_with_conflict() {
-        const LEASE_NAME: &str = "update-lease-with-conflict-test";
-
-        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
-
-        // Lock lease ordinary
-        states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
-        states[1].sync(LeaseLockOpts::Force).await.unwrap();
-
-        // if lock is orphan - try to lock it softly
-        let now: DateTime<Utc> = SystemTime::now().into();
-        let patch = serde_json::json!({
-            "apiVersion": "coordination.k8s.io/v1",
-            "kind": "Lease",
-            "spec": {
-                "acquireTime": MicroTime(now),
-                "renewTime": MicroTime(now),
-                "holderIdentity": params[1].identity,
-                "leaseDurationSeconds": params[1].duration.as_secs(),
-                "leaseTransitions": states[1].transitions + 1,
-            },
-        });
-
-        let patch = Patch::Apply(patch);
-        let result = states[1].patch(&params[1], &patch, false).await;
-        assert!(result.is_err());
-        assert!(matches!(result, Err(LeaseError::LockConflict)));
-
-        states[0].delete().await.unwrap();
     }
 
     #[tokio::test]
@@ -970,6 +943,7 @@ mod tests {
         let mut manager1 = managers.pop().unwrap();
 
         assert!(!manager0.is_leader.load(Ordering::Relaxed));
+        assert!(!manager1.is_leader.load(Ordering::Relaxed));
 
         // Lock by 1st
         let is_leader = manager0.changed().await.unwrap();
@@ -997,6 +971,13 @@ mod tests {
 
         // Expire and try to re-lock by 2nd
         tokio::time::sleep(manager0.params.duration).await;
+        let is_leader = manager1.changed().await.unwrap();
+        assert!(is_leader);
+        assert!(manager1.is_leader.load(Ordering::Relaxed));
+
+        let is_leader = manager0.changed().await.unwrap();
+        assert!(!is_leader);
+        assert!(!manager0.is_leader.load(Ordering::Relaxed));
 
         // Clean up
         manager0.state.delete().await.unwrap();
