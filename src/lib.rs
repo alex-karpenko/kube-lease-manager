@@ -71,8 +71,6 @@ struct LeaseState {
     expiry: SystemTime,
     /// Transitions count.
     transitions: i32,
-    ///
-    version: Option<String>,
 }
 
 /// Lease lock manager.
@@ -138,7 +136,6 @@ impl LeaseState {
             holder: None,
             expiry: SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap(),
             transitions: 0,
-            version: None,
         }
     }
 
@@ -201,7 +198,6 @@ impl LeaseState {
                 self.transitions = 0;
                 self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
             }
-            self.version = result.metadata.resource_version;
         }
 
         Ok(())
@@ -219,9 +215,6 @@ impl LeaseState {
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
-                "metadata": {
-                    "resourceVersion": self.version,
-                },
                 "spec": {
                     "renewTime": MicroTime(now),
                     "leaseDurationSeconds": lease_duration_seconds,
@@ -233,9 +226,6 @@ impl LeaseState {
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
-                "metadata": {
-                    "resourceVersion": self.version,
-                },
                 "spec": {
                     "acquireTime": MicroTime(now),
                     "renewTime": MicroTime(now),
@@ -250,9 +240,6 @@ impl LeaseState {
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
-                "metadata": {
-                    "resourceVersion": self.version,
-                },
                 "spec": {
                     "acquireTime": MicroTime(now),
                     "renewTime": MicroTime(now),
@@ -279,9 +266,6 @@ impl LeaseState {
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
-                "metadata": {
-                    "resourceVersion": self.version,
-                },
                 "spec": {
                     "acquireTime": Option::<()>::None,
                     "renewTime": Option::<()>::None,
@@ -791,20 +775,17 @@ mod tests {
 
         // Try to lock by 2nd and 1st
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
-        states[1].lock(&params[1], LeaseLockOpts::Soft).await.unwrap();
-        let res = states[1].lock(&params[1], LeaseLockOpts::Force).await;
+        states[1].lock(&params[1], LeaseLockOpts::Force).await.unwrap();
         states[0].sync(LeaseLockOpts::Force).await.unwrap();
 
         assert!(states[0].is_locked());
-        assert!(states[0].is_holder(&params[0].identity));
+        assert!(!states[0].is_holder(&params[0].identity));
         assert!(!states[0].is_expired());
 
         assert!(states[1].is_locked());
-        assert!(!states[1].is_holder(&params[1].identity));
-        assert!(states[1].is_holder(&params[0].identity));
+        assert!(states[1].is_holder(&params[1].identity));
+        assert!(!states[1].is_holder(&params[0].identity));
         assert!(!states[1].is_expired());
-        assert!(res.is_err());
-        assert!(matches!(res, Err(LeaseError::LockConflict)));
 
         states[0].delete().await.unwrap();
     }
