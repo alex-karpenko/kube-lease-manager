@@ -71,6 +71,8 @@ struct LeaseState {
     expiry: SystemTime,
     /// Transitions count.
     transitions: i32,
+    ///
+    version: Option<String>,
 }
 
 /// Lease lock manager.
@@ -136,6 +138,7 @@ impl LeaseState {
             holder: None,
             expiry: SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap(),
             transitions: 0,
+            version: None,
         }
     }
 
@@ -216,6 +219,9 @@ impl LeaseState {
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
+                "metadata": {
+                    "resourceVersion": self.version,
+                },
                 "spec": {
                     "renewTime": MicroTime(now),
                     "leaseDurationSeconds": lease_duration_seconds,
@@ -227,6 +233,9 @@ impl LeaseState {
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
+                "metadata": {
+                    "resourceVersion": self.version,
+                },
                 "spec": {
                     "acquireTime": MicroTime(now),
                     "renewTime": MicroTime(now),
@@ -241,6 +250,9 @@ impl LeaseState {
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
+                "metadata": {
+                    "resourceVersion": self.version,
+                },
                 "spec": {
                     "acquireTime": MicroTime(now),
                     "renewTime": MicroTime(now),
@@ -266,10 +278,10 @@ impl LeaseState {
 
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
-                "metadata": {
-                    "managedFields": [{}],
-                },
                 "kind": "Lease",
+                "metadata": {
+                    "resourceVersion": self.version,
+                },
                 "spec": {
                     "acquireTime": Option::<()>::None,
                     "renewTime": Option::<()>::None,
