@@ -8,7 +8,7 @@ use k8s_openapi::{
     serde_json,
 };
 use kube::{
-    api::{DeleteParams, ObjectMeta, Patch, PatchParams, PostParams},
+    api::{ObjectMeta, Patch, PatchParams, PostParams},
     Api, Client,
 };
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
@@ -38,7 +38,7 @@ const DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS: DurationMillis = 1000;
 /// Represents `kube-lease` specific errors.
 #[derive(thiserror::Error, Debug)]
 pub enum LeaseError {
-    /// Error origins from the Kubernetes.
+    /// Error originated from the Kubernetes.
     #[error("Kube error: {0}")]
     KubeError(
         #[source]
@@ -55,6 +55,14 @@ pub enum LeaseError {
     /// Usually root cause is a bug.
     #[error("inconsistent kube-lease state detected: {0}")]
     InconsistentState(String),
+
+    /// Try to create Lease but it already exists.
+    #[error("Lease resource `{0}` already exists")]
+    LeaseAlreadyExists(String),
+
+    /// Try to use non-existent Lease resource.
+    #[error("Lease resource `{0}` doesn't exist")]
+    NonexistentLease(String),
 }
 
 /// Parameters of LeaseManager.
@@ -66,6 +74,17 @@ pub struct LeaseParams {
     duration: DurationSeconds,
     /// Period of tme to renew lease lock before it expires.
     grace: DurationSeconds,
+}
+
+/// Lease resource creation mode.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub enum LeaseCreateMode {
+    #[default]
+    AutoCreate,
+    CreateNew,
+    UseExistent,
+    #[cfg(test)]
+    Ignore,
 }
 
 /// Represents actual Lease state.
@@ -128,9 +147,9 @@ impl LeaseParams {
 
 impl Default for LeaseParams {
     /// Creates parameters instance with reasonable defaults:
-    ///   - random alpha-numeric identity string, length is [`DEFAULT_RANDOM_IDENTITY_LEN`]
-    ///   - lease duration is [`DEFAULT_LEASE_DURATION_SECONDS`]
-    ///   - lease grace period is [`DEFAULT_LEASE_GRACE_SECONDS`]
+    ///   - random alpha-numeric identity string;
+    ///   - lease duration is [`DEFAULT_LEASE_DURATION_SECONDS`];
+    ///   - lease grace period is [`DEFAULT_LEASE_GRACE_SECONDS`].
     fn default() -> Self {
         Self::new(
             random_string(DEFAULT_RANDOM_IDENTITY_LEN),
@@ -141,16 +160,24 @@ impl Default for LeaseParams {
 }
 
 impl LeaseState {
-    fn new(client: Client, lease_name: impl Into<String>, namespace: &str) -> Self {
+    async fn new(
+        client: Client,
+        lease_name: impl Into<String>,
+        namespace: &str,
+        create_mode: LeaseCreateMode,
+    ) -> Result<Self> {
         let api = Api::<Lease>::namespaced(client, namespace);
 
-        Self {
+        let state = Self {
             api,
             lease_name: lease_name.into(),
             holder: None,
             expiry: SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap(),
             transitions: 0,
-        }
+        };
+
+        state.create(create_mode).await?;
+        Ok(state)
     }
 
     /// Check if current state is still valid.
@@ -175,17 +202,15 @@ impl LeaseState {
     /// Retrieve actual state from the cluster.
     async fn sync(&mut self, opts: LeaseLockOpts) -> Result<()> {
         if opts == LeaseLockOpts::Force || self.is_expired() {
-            let result = self.api.get(&self.lease_name).await;
+            let result = self.get().await;
 
             // If Lease doesn't exist - clear state before exiting
-            if let Err(kube::Error::Api(err)) = &result {
-                if err.code == 404 {
-                    self.holder = None;
-                    self.transitions = 0;
-                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+            if let Err(LeaseError::NonexistentLease(_)) = &result {
+                self.holder = None;
+                self.transitions = 0;
+                self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
 
-                    return Err(LeaseError::from(result.err().unwrap()));
-                }
+                return Err(result.err().unwrap());
             }
 
             // If success or non-404 - try to unwrap spec and do sync
@@ -316,8 +341,19 @@ impl LeaseState {
         }
     }
 
-    #[allow(dead_code)]
-    async fn create(&self) -> Result<Lease> {
+    async fn get(&self) -> Result<Lease> {
+        let result = self.api.get(&self.lease_name).await;
+
+        // Map error is it doesn't exists
+        match result {
+            Ok(lease) => Ok(lease),
+            Err(kube::Error::Api(err)) if err.code == 404 => Err(LeaseError::NonexistentLease(self.lease_name.clone())),
+            Err(err) => Err(LeaseError::KubeError(err)),
+        }
+    }
+
+    async fn create(&self, mode: LeaseCreateMode) -> Result<Lease> {
+        let result = self.get().await;
         let pp = PostParams::default();
         let data = Lease {
             metadata: ObjectMeta {
@@ -327,30 +363,55 @@ impl LeaseState {
             spec: Default::default(),
         };
 
-        Ok(self.api.create(&pp, &data).await?)
-    }
-
-    #[allow(dead_code)]
-    async fn delete(&self) -> Result<()> {
-        let dp = DeleteParams::default();
-        let _ = self.api.delete(&self.lease_name, &dp).await?;
-
-        Ok(())
+        match mode {
+            LeaseCreateMode::AutoCreate => {
+                // Get it and return ok if it exists,
+                // Create if it doesn't exist
+                if let Ok(lease) = result {
+                    Ok(lease)
+                } else if let Err(LeaseError::NonexistentLease(_)) = result {
+                    self.api.create(&pp, &data).await.map_err(LeaseError::from)
+                } else {
+                    result
+                }
+            }
+            LeaseCreateMode::CreateNew => {
+                // Get it and fail if it exists,
+                // Create if else
+                if result.is_ok() {
+                    Err(LeaseError::LeaseAlreadyExists(self.lease_name.clone()))
+                } else {
+                    self.api.create(&pp, &data).await.map_err(LeaseError::from)
+                }
+            }
+            LeaseCreateMode::UseExistent => {
+                // Get it and fail if doesn't exist
+                result
+            }
+            #[cfg(test)]
+            LeaseCreateMode::Ignore => Ok(data),
+        }
     }
 }
 
 impl LeaseManager {
-    pub fn new(client: Client, lease_name: &str, namespace: &str, params: LeaseParams) -> Self {
-        Self {
+    pub async fn new(
+        client: Client,
+        lease_name: &str,
+        namespace: &str,
+        params: LeaseParams,
+        create_mode: LeaseCreateMode,
+    ) -> Result<Self> {
+        Ok(Self {
             params,
-            state: RwLock::new(LeaseState::new(client, lease_name, namespace)),
+            state: RwLock::new(LeaseState::new(client, lease_name, namespace, create_mode).await?),
             is_leader: AtomicBool::new(false),
-        }
+        })
     }
 
-    /// Try to lock lease and renew it periodically.
+    /// Try to lock lease and renew it periodically to prevent expiration.
     ///
-    /// Returns self leader status as soon as it was changed.
+    /// Returns self leader lock status as soon as it was changed (acquired or released).
     pub async fn changed(&self) -> Result<bool> {
         loop {
             // re-sync state if needed
@@ -368,6 +429,17 @@ impl LeaseManager {
             // Make single iteration, if no changes so far
             self.watcher_step().await?;
         }
+    }
+
+    /// Release self-lock if it's set, or do nothing if lease is locked by other identity.
+    ///
+    /// It's useful to call this method to free locked lease gracefully before exit/shutdown if you use [`LeaseManager::changed`] directly instead of the using [`LeaseManager::watch`].
+    pub async fn release(&self) -> Result<()> {
+        self.state
+            .write()
+            .await
+            .release(&self.params, LeaseLockOpts::Soft)
+            .await
     }
 
     async fn watcher_step(&self) -> Result<()> {
@@ -461,7 +533,7 @@ mod tests {
     use super::*;
     use futures::future::select_all;
     use k8s_openapi::api::{coordination::v1::LeaseSpec, core::v1::Namespace};
-    use kube::Resource as _;
+    use kube::{api::DeleteParams, Resource as _};
     use std::collections::HashSet;
     use tokio::{select, sync::OnceCell};
 
@@ -503,14 +575,16 @@ mod tests {
 
         for i in 0..count {
             let param = LeaseParams::new(format!("leader-{i}"), LEASE_DURATION_SECONDS, LEASE_GRACE_SECONDS);
-            let state = LeaseState::new(client.clone(), lease_name, TEST_NAMESPACE);
+            let state = LeaseState::new(client.clone(), lease_name, TEST_NAMESPACE, LeaseCreateMode::Ignore)
+                .await
+                .unwrap();
 
             params.push(param);
             states.push(state);
         }
 
         // Create lease
-        let _ = states[0].create().await.unwrap();
+        let _ = states[0].create(LeaseCreateMode::CreateNew).await.unwrap();
 
         (params, states)
     }
@@ -524,17 +598,42 @@ mod tests {
 
         for i in 0..count {
             let param = LeaseParams::new(format!("leader-{i}"), LEASE_DURATION_SECONDS, LEASE_GRACE_SECONDS);
-            let manager = LeaseManager::new(client.clone(), lease_name, TEST_NAMESPACE, param);
+            let manager = LeaseManager::new(
+                client.clone(),
+                lease_name,
+                TEST_NAMESPACE,
+                param,
+                LeaseCreateMode::Ignore,
+            )
+            .await
+            .unwrap();
             managers.push(manager);
         }
 
         // Create lease
-        let _ = managers[0].state.read().await.create().await.unwrap();
+        let _ = managers[0]
+            .state
+            .read()
+            .await
+            .create(LeaseCreateMode::CreateNew)
+            .await
+            .unwrap();
         managers
     }
 
     async fn sleep_secs(seconds: DurationSeconds) {
         tokio::time::sleep(Duration::from_secs(seconds)).await
+    }
+
+    impl LeaseState {
+        async fn delete(&self) -> Result<()> {
+            use kube::api::DeleteParams;
+
+            let dp = DeleteParams::default();
+            let _ = self.api.delete(&self.lease_name, &dp).await?;
+
+            Ok(())
+        }
     }
 
     #[test]
@@ -570,13 +669,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_delete() {
-        const LEASE_NAME: &str = "create-delete-test";
+    async fn rough_create_delete() {
+        const LEASE_NAME: &str = "rough-create-delete-test";
 
         let client = init().await;
-        let state = LeaseState::new(client, LEASE_NAME, TEST_NAMESPACE);
+        let state = LeaseState::new(client, LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::Ignore)
+            .await
+            .unwrap();
 
-        let lease = state.create().await.unwrap();
+        let lease = state.create(LeaseCreateMode::CreateNew).await.unwrap();
         assert!(lease.spec.is_some());
         assert_eq!(lease.spec.unwrap(), LeaseSpec::default());
 
@@ -868,7 +969,7 @@ mod tests {
 
         let result = states[0].sync(LeaseLockOpts::Force).await;
         assert!(result.is_err());
-        assert!(matches!(result.err().unwrap(), LeaseError::KubeError(kube::Error::Api(err)) if err.code==404));
+        assert!(matches!(result.err().unwrap(), LeaseError::NonexistentLease(_)));
         assert!(states[0].holder.is_none());
         assert_eq!(states[0].transitions, 0);
         assert!(states[0].is_expired());
@@ -877,7 +978,15 @@ mod tests {
     #[tokio::test]
     async fn grace_sleep_duration() {
         let client = Client::try_default().await.unwrap();
-        let manager = LeaseManager::new(client, "lease_name", "namespace", LeaseParams::default());
+        let manager = LeaseManager::new(
+            client,
+            "lease_name",
+            "namespace",
+            LeaseParams::default(),
+            LeaseCreateMode::Ignore,
+        )
+        .await
+        .unwrap();
 
         // Already expired - always ZERO
         let expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
@@ -1097,5 +1206,113 @@ mod tests {
 
         // Clean up
         managers[0].state.read().await.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn create_lease() {
+        const LEASE_NAME: &str = "create-lease-test";
+
+        let client = init().await;
+        let dp = DeleteParams::default();
+        let api = Api::<Lease>::namespaced(client.clone(), TEST_NAMESPACE);
+
+        let _ = api.delete(LEASE_NAME, &dp).await;
+
+        assert!(
+            matches!(
+                LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::UseExistent).await,
+                Err(LeaseError::NonexistentLease(_))
+            ),
+            "lease exists but shouldn't"
+        );
+
+        assert!(
+            LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::AutoCreate)
+                .await
+                .is_ok(),
+            "lease wasn't created"
+        );
+
+        assert!(
+            LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::UseExistent)
+                .await
+                .is_ok(),
+            "lease wasn't created"
+        );
+
+        assert!(
+            LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::AutoCreate)
+                .await
+                .is_ok(),
+            "lease wasn't created"
+        );
+
+        assert!(
+            matches!(
+                LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::CreateNew).await,
+                Err(LeaseError::LeaseAlreadyExists(_))
+            ),
+            "lease should exist"
+        );
+
+        api.delete(LEASE_NAME, &dp).await.unwrap();
+
+        assert!(
+            LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::CreateNew)
+                .await
+                .is_ok(),
+            "lease shouldn't exist"
+        );
+
+        api.delete(LEASE_NAME, &dp).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn two_managers_1st_releases_then_2nd_locks() {
+        const LEASE_NAME: &str = "two-managers-1st-releases-then-2nd-locks-test";
+
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
+        let manager0 = managers.pop().unwrap();
+        let manager1 = managers.pop().unwrap();
+
+        assert!(!manager0.is_leader.load(Ordering::Relaxed));
+        assert!(!manager1.is_leader.load(Ordering::Relaxed));
+
+        // Lock by 1st
+        let is_leader = manager0.changed().await.unwrap();
+        assert!(is_leader);
+        assert!(manager0.is_leader.load(Ordering::Relaxed));
+        assert!(!manager1.is_leader.load(Ordering::Relaxed));
+
+        // Try to hold lock by 1st
+        let long_duration = Duration::from_secs(manager0.params.duration * 2);
+        select! {
+            biased;
+             _ = manager0.changed() => {
+                unreachable!("unreachable branch since `changed` loop should last forever")
+             },
+             _ = manager1.changed() => {
+                unreachable!("unreachable branch since `changed` loop should last forever")
+             },
+             _ = tokio::time::sleep(long_duration) => {
+                assert!(manager0.is_leader.load(Ordering::Relaxed));
+                assert!(!manager1.is_leader.load(Ordering::Relaxed));
+            }
+        }
+        assert!(manager0.is_leader.load(Ordering::Relaxed));
+        assert!(!manager1.is_leader.load(Ordering::Relaxed));
+
+        // Release and try to re-lock by 2nd
+        manager0.release().await.unwrap();
+        let is_leader = manager1.changed().await.unwrap();
+        assert!(is_leader);
+        assert!(manager1.is_leader.load(Ordering::Relaxed));
+
+        let is_leader = manager0.changed().await.unwrap();
+        assert!(!is_leader);
+        assert!(!manager0.is_leader.load(Ordering::Relaxed));
+
+        // Clean up
+        manager0.state.read().await.delete().await.unwrap();
     }
 }
