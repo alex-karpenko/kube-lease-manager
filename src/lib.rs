@@ -21,6 +21,7 @@ use tracing::{debug, error};
 
 /// Convenient alias for `Result`.
 pub type Result<T, E = LeaseError> = std::result::Result<T, E>;
+pub type DurationSeconds = u64;
 
 pub const DEFAULT_LEASE_DURATION_SECONDS: u64 = 30;
 pub const DEFAULT_LEASE_GRACE_SECONDS: u64 = 5;
@@ -54,9 +55,9 @@ pub struct LeaseParams {
     /// Lease holder identity.
     identity: String,
     /// Duration of lease lock.
-    duration: Duration,
+    duration: DurationSeconds,
     /// Period of tme to renew lease lock before it expires.
-    grace: Duration,
+    grace: DurationSeconds,
 }
 
 /// Represents actual Lease state.
@@ -96,19 +97,19 @@ impl Default for LeaseParams {
     fn default() -> Self {
         Self::new(
             random_string(DEFAULT_RANDOM_IDENTITY_LEN),
-            Duration::from_secs(DEFAULT_LEASE_DURATION_SECONDS),
-            Duration::from_secs(DEFAULT_LEASE_GRACE_SECONDS),
+            DEFAULT_LEASE_DURATION_SECONDS,
+            DEFAULT_LEASE_GRACE_SECONDS,
         )
     }
 }
 
 impl LeaseParams {
     /// Lease lock parameters constructor.
-    pub fn new(identity: impl Into<String>, duration: impl Into<Duration>, grace: impl Into<Duration>) -> Self {
-        let duration: Duration = duration.into();
-        let grace: Duration = grace.into();
+    pub fn new(identity: impl Into<String>, duration: DurationSeconds, grace: DurationSeconds) -> Self {
+        let duration: DurationSeconds = duration;
+        let grace: DurationSeconds = grace;
 
-        if duration == Duration::ZERO || grace == Duration::ZERO {
+        if duration == 0 || grace == 0 {
             panic!("duration and grace period should be greater than zero");
         } else if grace >= duration {
             panic!("grace period should be less than lease lock duration");
@@ -206,7 +207,7 @@ impl LeaseState {
     async fn lock(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<()> {
         self.sync(LeaseLockOpts::Soft).await?;
 
-        let lease_duration_seconds = params.duration.as_secs();
+        let lease_duration_seconds = params.duration;
         let now: DateTime<Utc> = SystemTime::now().into();
 
         // if we're holder - just refresh lease
@@ -384,7 +385,7 @@ impl LeaseManager {
                 identity = %self.params.identity, holder = self.state.holder.as_ref().unwrap(),
                 "lease is actually locked by other identity"
             );
-            tokio::time::sleep(self.grace_sleep_duration(Duration::ZERO)).await;
+            tokio::time::sleep(self.grace_sleep_duration(0)).await;
             Ok(())
         } else {
             // Something wrong happened
@@ -395,7 +396,8 @@ impl LeaseManager {
         }
     }
 
-    fn grace_sleep_duration(&self, grace: Duration) -> Duration {
+    fn grace_sleep_duration(&self, grace: DurationSeconds) -> Duration {
+        let grace = Duration::from_secs(grace);
         self.state
             .expiry
             .duration_since(SystemTime::now())
@@ -463,11 +465,7 @@ mod tests {
         let mut states = vec![];
 
         for i in 0..count {
-            let param = LeaseParams::new(
-                format!("leader-{i}"),
-                Duration::from_secs(LEASE_DURATION_SECONDS),
-                Duration::from_secs(LEASE_GRACE_SECONDS),
-            );
+            let param = LeaseParams::new(format!("leader-{i}"), LEASE_DURATION_SECONDS, LEASE_GRACE_SECONDS);
             let state = LeaseState::new(client.clone(), lease_name, TEST_NAMESPACE);
 
             params.push(param);
@@ -488,11 +486,7 @@ mod tests {
         let mut managers = vec![];
 
         for i in 0..count {
-            let param = LeaseParams::new(
-                format!("leader-{i}"),
-                Duration::from_secs(LEASE_DURATION_SECONDS),
-                Duration::from_secs(LEASE_GRACE_SECONDS),
-            );
+            let param = LeaseParams::new(format!("leader-{i}"), LEASE_DURATION_SECONDS, LEASE_GRACE_SECONDS);
             let manager = LeaseManager::new(client.clone(), lease_name, TEST_NAMESPACE, param);
             managers.push(manager);
         }
@@ -502,36 +496,40 @@ mod tests {
         managers
     }
 
+    async fn sleep_secs(seconds: DurationSeconds) {
+        tokio::time::sleep(Duration::from_secs(seconds)).await
+    }
+
     #[test]
     fn lease_params_default_constructor() {
         let params = LeaseParams::default();
         assert_eq!(params.identity.len(), DEFAULT_RANDOM_IDENTITY_LEN);
-        assert_eq!(params.duration.as_secs(), DEFAULT_LEASE_DURATION_SECONDS);
-        assert_eq!(params.grace.as_secs(), DEFAULT_LEASE_GRACE_SECONDS);
+        assert_eq!(params.duration, DEFAULT_LEASE_DURATION_SECONDS);
+        assert_eq!(params.grace, DEFAULT_LEASE_GRACE_SECONDS);
     }
 
     #[test]
     #[should_panic = "duration and grace period should be greater than zero"]
     fn incorrect_lease_params_duration_0() {
-        let _params = LeaseParams::new(random_string(10), Duration::from_secs(0), Duration::from_secs(0));
+        let _params = LeaseParams::new(random_string(10), 0, 0);
     }
 
     #[test]
     #[should_panic = "duration and grace period should be greater than zero"]
     fn incorrect_lease_params_grace_0() {
-        let _params = LeaseParams::new(random_string(10), Duration::from_secs(2), Duration::from_secs(0));
+        let _params = LeaseParams::new(random_string(10), 2, 0);
     }
 
     #[test]
     #[should_panic = "grace period should be less than lease lock duration"]
     fn incorrect_lease_params_duration_equal_grace() {
-        let _params = LeaseParams::new(random_string(10), Duration::from_secs(2), Duration::from_secs(2));
+        let _params = LeaseParams::new(random_string(10), 2, 2);
     }
 
     #[test]
     #[should_panic = "grace period should be less than lease lock duration"]
     fn incorrect_lease_params_duration_less_than_grace() {
-        let _params = LeaseParams::new(random_string(10), Duration::from_secs(2), Duration::from_secs(3));
+        let _params = LeaseParams::new(random_string(10), 2, 3);
     }
 
     #[tokio::test]
@@ -560,7 +558,7 @@ mod tests {
         assert!(!states[0].is_expired());
 
         // Expire
-        tokio::time::sleep(params[0].duration).await;
+        sleep_secs(params[0].duration).await;
         assert!(states[0].is_locked());
         assert!(states[0].is_holder(&params[0].identity));
         assert!(states[0].is_expired());
@@ -606,7 +604,7 @@ mod tests {
         assert!(!states[1].is_expired());
 
         // Expire
-        tokio::time::sleep(params[0].duration).await;
+        sleep_secs(params[0].duration).await;
         assert!(states[0].is_expired());
         assert!(states[1].is_expired());
 
@@ -692,7 +690,7 @@ mod tests {
         assert!(!states[1].is_expired());
 
         // Expire
-        tokio::time::sleep(params[0].duration).await;
+        sleep_secs(params[0].duration).await;
         assert!(states[0].is_expired());
         assert!(states[1].is_expired());
 
@@ -731,7 +729,7 @@ mod tests {
         assert!(!states[1].is_expired());
 
         // Expire
-        tokio::time::sleep(params[0].duration).await;
+        sleep_secs(params[0].duration).await;
         assert!(states[0].is_expired());
         assert!(states[1].is_expired());
 
@@ -770,7 +768,7 @@ mod tests {
         assert!(!states[1].is_expired());
 
         // Don't expire
-        tokio::time::sleep(params[0].grace).await;
+        sleep_secs(params[0].grace).await;
         assert!(!states[0].is_expired());
         assert!(!states[1].is_expired());
 
@@ -847,30 +845,30 @@ mod tests {
         // Already expired - always ZERO
         manager.state.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
         assert_eq!(
-            manager.grace_sleep_duration(Duration::ZERO),
+            manager.grace_sleep_duration(0),
             Duration::ZERO,
             "should be ZERO since it's already expired"
         );
         assert_eq!(
-            manager.grace_sleep_duration(Duration::from_secs(1)),
+            manager.grace_sleep_duration(1),
             Duration::ZERO,
             "should be ZERO since it's already expired"
         );
 
         // Expires in 10s
         manager.state.expiry = SystemTime::now().checked_add(Duration::from_secs(10)).unwrap();
-        let duration = manager.grace_sleep_duration(Duration::ZERO);
+        let duration = manager.grace_sleep_duration(0);
         assert!(
             duration >= Duration::from_millis(9_900) && duration <= Duration::from_millis(10_000),
             "should be around 10s"
         );
-        let duration = manager.grace_sleep_duration(Duration::from_secs(1));
+        let duration = manager.grace_sleep_duration(1);
         assert!(
             duration >= Duration::from_millis(8_900) && duration <= Duration::from_millis(9_000),
             "should be around 9s"
         );
         assert_eq!(
-            manager.grace_sleep_duration(Duration::from_secs(10)),
+            manager.grace_sleep_duration(10),
             Duration::ZERO,
             "should be around ZERO"
         );
@@ -892,7 +890,7 @@ mod tests {
         assert!(!managers[0].state.is_expired());
 
         // Expire
-        tokio::time::sleep(managers[0].params.duration).await;
+        sleep_secs(managers[0].params.duration).await;
         assert!(!managers[0].is_leader.load(Ordering::Relaxed));
         assert!(managers[0].state.is_holder(&managers[0].params.identity));
         assert!(managers[0].state.is_locked());
@@ -913,7 +911,7 @@ mod tests {
         assert!(is_leader);
         assert!(managers[0].is_leader.load(Ordering::Relaxed));
 
-        let long_duration = managers[0].params.duration.checked_mul(2).unwrap();
+        let long_duration = Duration::from_secs(managers[0].params.duration * 2);
         select! {
              _ = managers[0].changed() => {
                 unreachable!("unreachable branch since `changed` loop should last forever")
@@ -946,7 +944,7 @@ mod tests {
         assert!(!manager1.is_leader.load(Ordering::Relaxed));
 
         // Try to hold lock by 1st
-        let long_duration = manager0.params.duration.checked_mul(2).unwrap();
+        let long_duration = Duration::from_secs(manager0.params.duration * 2);
         select! {
             biased;
              _ = manager0.changed() => {
@@ -964,7 +962,7 @@ mod tests {
         assert!(!manager1.is_leader.load(Ordering::Relaxed));
 
         // Expire and try to re-lock by 2nd
-        tokio::time::sleep(manager0.params.duration).await;
+        sleep_secs(manager0.params.duration).await;
         let is_leader = manager1.changed().await.unwrap();
         assert!(is_leader);
         assert!(manager1.is_leader.load(Ordering::Relaxed));
@@ -1000,7 +998,7 @@ mod tests {
         }
 
         // Try to hold lock by 1st
-        let long_duration = managers[0].params.duration.checked_mul(2).unwrap();
+        let long_duration = Duration::from_secs(managers[0].params.duration * 2);
         {
             let managers_fut: Vec<_> = managers
                 .iter_mut()
@@ -1025,9 +1023,7 @@ mod tests {
         }
         // Expire it
         tokio::time::sleep(
-            managers[0]
-                .params
-                .duration
+            Duration::from_secs(managers[0].params.duration)
                 .checked_add(Duration::from_millis(100))
                 .unwrap(),
         )
