@@ -17,7 +17,7 @@ jobs:
         rust:
           - stable
           - beta
-          - 1.70.0
+          - 1.75.0
         k8s:
           - v1.26
           - latest
