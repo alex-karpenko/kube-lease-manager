@@ -30,12 +30,6 @@ jobs:
           components: rustfmt,clippy
 
       - uses: Swatinem/rust-cache@v2
-      - uses: nolar/setup-k3d-k3s@v1
-        with:
-          version: ${{matrix.k8s}}
-          k3d-name: kube
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
 
       - name: Fmt
         run: cargo fmt --all -- --check
@@ -46,5 +40,14 @@ jobs:
       - name: Build
         run: cargo build
 
+      - uses: nolar/setup-k3d-k3s@v1
+        with:
+          version: ${{matrix.k8s}}
+          k3d-name: kube
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
+
       - name: Test
+        env:
+          RUST_LOG: kube_lease=debug
         run: cargo test --lib --all -- --include-ignored
