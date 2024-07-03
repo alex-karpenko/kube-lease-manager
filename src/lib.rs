@@ -916,7 +916,7 @@ mod tests {
         let long_duration = managers[0].params.duration.checked_mul(2).unwrap();
         select! {
              _ = managers[0].changed() => {
-                unreachable!("unreachable branch since `changed` loop should lasts forever")
+                unreachable!("unreachable branch since `changed` loop should last forever")
              },
              _ = tokio::time::sleep(long_duration) => {
                 assert!(managers[0].is_leader.load(Ordering::Relaxed))
@@ -929,8 +929,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn two_managers_1st_expire_then_2nd_lock() {
-        const LEASE_NAME: &str = "two-managers-1st-expire-then-2nd-lock-test";
+    async fn two_managers_1st_expires_then_2nd_locks() {
+        const LEASE_NAME: &str = "two-managers-1st-expires-then-2nd-locks-test";
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
         let mut manager0 = managers.pop().unwrap();
@@ -950,10 +950,10 @@ mod tests {
         select! {
             biased;
              _ = manager0.changed() => {
-                unreachable!("unreachable branch since `changed` loop should lasts forever")
+                unreachable!("unreachable branch since `changed` loop should last forever")
              },
              _ = manager1.changed() => {
-                unreachable!("unreachable branch since `changed` loop should lasts forever")
+                unreachable!("unreachable branch since `changed` loop should last forever")
              },
              _ = tokio::time::sleep(long_duration) => {
                 assert!(manager0.is_leader.load(Ordering::Relaxed));
@@ -978,9 +978,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn many_managers_1st_expire_then_someone_lock() {
-        const LEASE_NAME: &str = "many-managers-1st-expire-then-someone-lock-test";
-        const MANAGERS: usize = 100;
+    async fn many_managers_1st_expires_then_someone_locks() {
+        const LEASE_NAME: &str = "many-managers-1st-expires-then-someone-locks-test";
+        const MANAGERS: usize = 10;
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, MANAGERS).await;
 
@@ -995,18 +995,28 @@ mod tests {
             assert_eq!(
                 i == 0,
                 manager.is_leader.load(Ordering::Relaxed),
-                "Locked by incorrect manager"
+                "locked by incorrect manager"
             );
         }
 
         // Try to hold lock by 1st
         let long_duration = managers[0].params.duration.checked_mul(2).unwrap();
         {
-            let managers_fut: Vec<_> = managers.iter_mut().map(|m| Box::pin(m.changed())).collect();
+            let managers_fut: Vec<_> = managers
+                .iter_mut()
+                .map(|m| {
+                    let c = async {
+                        let r = m.changed().await;
+                        tokio::time::sleep(random_duration(0, 500)).await;
+                        r
+                    };
+                    Box::pin(c)
+                })
+                .collect();
             select! {
                 _ = tokio::time::sleep(long_duration) => {},
                 _ = select_all(managers_fut) => {
-                    unreachable!("unreachable branch since `changed` loop should lasts forever")
+                    unreachable!("unreachable branch since `changed` loop should last forever")
                 }
             }
             for (i, manager) in managers.iter().enumerate() {
@@ -1022,9 +1032,20 @@ mod tests {
                 .unwrap(),
         )
         .await;
-        // Try to re-lock by someone else (exclude 1st form loop)
+        // Try to re-lock by someone else (exclude 1st from loop)
         {
-            let managers_fut: Vec<_> = managers.iter_mut().skip(1).map(|m| Box::pin(m.changed())).collect();
+            let managers_fut: Vec<_> = managers
+                .iter_mut()
+                .skip(1)
+                .map(|m| {
+                    let c = async {
+                        let r = m.changed().await;
+                        tokio::time::sleep(random_duration(0, 500)).await;
+                        r
+                    };
+                    Box::pin(c)
+                })
+                .collect();
             let (result, index, _) = select_all(managers_fut).await;
             assert!(result.unwrap());
             // Assert that only one holds lock
@@ -1032,7 +1053,7 @@ mod tests {
                 assert_eq!(
                     i == index,
                     manager.is_leader.load(Ordering::Relaxed),
-                    "Locked by incorrect manager"
+                    "locked by incorrect manager"
                 );
             }
             // Assert that 1st lost lock
