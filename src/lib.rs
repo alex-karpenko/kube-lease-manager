@@ -627,8 +627,6 @@ mod tests {
 
     impl LeaseState {
         async fn delete(&self) -> Result<()> {
-            use kube::api::DeleteParams;
-
             let dp = DeleteParams::default();
             let _ = self.api.delete(&self.lease_name, &dp).await?;
 
