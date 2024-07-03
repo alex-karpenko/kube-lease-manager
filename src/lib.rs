@@ -17,24 +17,28 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime},
 };
+use tokio::sync::RwLock;
 use tracing::{debug, error};
 
+type DurationMillis = u64;
+/// Since all Durations related to Lease resource are in seconds, this alias is useful.
+pub type DurationSeconds = u64;
 /// Convenient alias for `Result`.
 pub type Result<T, E = LeaseError> = std::result::Result<T, E>;
-pub type DurationSeconds = u64;
 
-pub const DEFAULT_LEASE_DURATION_SECONDS: u64 = 30;
-pub const DEFAULT_LEASE_GRACE_SECONDS: u64 = 5;
+pub const DEFAULT_LEASE_DURATION_SECONDS: DurationSeconds = 30;
+pub const DEFAULT_LEASE_GRACE_SECONDS: DurationSeconds = 5;
 
 const DEFAULT_RANDOM_IDENTITY_LEN: usize = 32;
 const DEFAULT_FIELD_MANAGER_PREFIX: &str = env!("CARGO_PKG_NAME");
 
-const DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS: u64 = 100;
-const DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS: u64 = 1000;
+const DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS: DurationMillis = 100;
+const DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS: DurationMillis = 1000;
 
 /// Represents `kube-lease` specific errors.
 #[derive(thiserror::Error, Debug)]
 pub enum LeaseError {
+    /// Error origins from the Kubernetes.
     #[error("Kube error: {0}")]
     KubeError(
         #[source]
@@ -42,9 +46,13 @@ pub enum LeaseError {
         kube::Error,
     ),
 
+    /// Conflict detected during locking attempt.
     #[error("lock conflict detected")]
     LockConflict,
 
+    /// Internal lease state inconsistency detected.
+    ///
+    /// Usually root cause is a bug.
     #[error("inconsistent kube-lease state detected: {0}")]
     InconsistentState(String),
 }
@@ -63,10 +71,11 @@ pub struct LeaseParams {
 /// Represents actual Lease state.
 #[derive(Debug, Clone)]
 struct LeaseState {
+    /// namespaced kube::Api
     api: Api<Lease>,
     /// Name of the Lease object.
     lease_name: String,
-    /// Identity of the current Lease holder, if it's locket now.
+    /// Identity of the current Lease holder, if it's locked now.
     holder: Option<String>,
     /// Time of the potential state expiration.
     expiry: SystemTime,
@@ -80,7 +89,7 @@ pub struct LeaseManager {
     /// Parameters of the desired lock.
     params: LeaseParams,
     /// Current state.
-    state: LeaseState,
+    state: RwLock<LeaseState>,
     /// Is current identity marked as leader now
     is_leader: AtomicBool,
 }
@@ -91,16 +100,6 @@ enum LeaseLockOpts {
     #[default]
     Soft,
     Force,
-}
-
-impl Default for LeaseParams {
-    fn default() -> Self {
-        Self::new(
-            random_string(DEFAULT_RANDOM_IDENTITY_LEN),
-            DEFAULT_LEASE_DURATION_SECONDS,
-            DEFAULT_LEASE_GRACE_SECONDS,
-        )
-    }
 }
 
 impl LeaseParams {
@@ -124,6 +123,20 @@ impl LeaseParams {
 
     fn field_manager(&self) -> String {
         format!("{DEFAULT_FIELD_MANAGER_PREFIX}-{}", self.identity)
+    }
+}
+
+impl Default for LeaseParams {
+    /// Creates parameters instance with reasonable defaults:
+    ///   - random alpha-numeric identity string, length is [`DEFAULT_RANDOM_IDENTITY_LEN`]
+    ///   - lease duration is [`DEFAULT_LEASE_DURATION_SECONDS`]
+    ///   - lease grace period is [`DEFAULT_LEASE_GRACE_SECONDS`]
+    fn default() -> Self {
+        Self::new(
+            random_string(DEFAULT_RANDOM_IDENTITY_LEN),
+            DEFAULT_LEASE_DURATION_SECONDS,
+            DEFAULT_LEASE_GRACE_SECONDS,
+        )
     }
 }
 
@@ -182,7 +195,9 @@ impl LeaseState {
                 self.transitions = lease.lease_transitions.unwrap_or(0);
                 self.expiry = {
                     let renew = lease.renew_time;
-                    let duration = lease.lease_duration_seconds.map(|d| Duration::from_secs(d as u64));
+                    let duration = lease
+                        .lease_duration_seconds
+                        .map(|d| Duration::from_secs(d as DurationSeconds));
 
                     if renew.is_some() && duration.is_some() {
                         let renew: SystemTime = renew.unwrap().0.into();
@@ -328,19 +343,21 @@ impl LeaseManager {
     pub fn new(client: Client, lease_name: &str, namespace: &str, params: LeaseParams) -> Self {
         Self {
             params,
-            state: LeaseState::new(client, lease_name, namespace),
+            state: RwLock::new(LeaseState::new(client, lease_name, namespace)),
             is_leader: AtomicBool::new(false),
         }
     }
 
-    /// Try to lock lease and renew it periodically. Returns leader status as soon as it was changed.
-    pub async fn changed(&mut self) -> Result<bool> {
+    /// Try to lock lease and renew it periodically.
+    ///
+    /// Returns self leader status as soon as it was changed.
+    pub async fn changed(&self) -> Result<bool> {
         loop {
             // re-sync state if needed
-            self.state.sync(LeaseLockOpts::Soft).await?;
+            self.state.write().await.sync(LeaseLockOpts::Soft).await?;
 
-            // Is leader changed after this iteration?
-            let is_holder = self.state.is_holder(&self.params.identity);
+            // Is leader changed iteration?
+            let is_holder = self.state.read().await.is_holder(&self.params.identity);
             if self.is_leader.load(Ordering::Acquire) != is_holder {
                 debug!(identity = %self.params.identity, is_leader = is_holder, "lease lock state has been changed");
                 self.is_leader.store(is_holder, Ordering::Release);
@@ -353,23 +370,28 @@ impl LeaseManager {
         }
     }
 
-    async fn watcher_step(&mut self) -> Result<()> {
-        if self.state.is_holder(&self.params.identity) {
+    async fn watcher_step(&self) -> Result<()> {
+        if self.is_holder().await {
             // if we're holder of the lock - sleep up to the next refresh time,
             // and renew lock (lock it softly)
-            tokio::time::sleep(self.grace_sleep_duration(self.params.grace)).await;
+            tokio::time::sleep(self.grace_sleep_duration(self.expiry().await, self.params.grace)).await;
 
             debug!(identity = %self.params.identity, "renew own lease lock");
-            self.state.lock(&self.params, LeaseLockOpts::Soft).await
-        } else if !self.state.is_locked() {
+            self.state.write().await.lock(&self.params, LeaseLockOpts::Soft).await
+        } else if !self.is_locked().await {
             // Lease isn't locket yet
             debug!(identity = %self.params.identity, "try to lock lease");
-            self.state.lock(&self.params, LeaseLockOpts::Soft).await
-        } else if self.state.is_locked() && self.state.is_expired() {
+            self.state.write().await.lock(&self.params, LeaseLockOpts::Soft).await
+        } else if self.is_locked().await && self.is_expired().await {
             // It's locked by someone else but lock is already expired.
             // Release it by force and try to lock on the next loop cycle
             debug!(identity = %self.params.identity, "release expired lease lock");
-            let res = self.state.release(&self.params, LeaseLockOpts::Force).await;
+            let res = self
+                .state
+                .write()
+                .await
+                .release(&self.params, LeaseLockOpts::Force)
+                .await;
 
             // Sleep some random time (up to 500ms) to minimize collisions probability
             tokio::time::sleep(random_duration(
@@ -378,14 +400,14 @@ impl LeaseManager {
             ))
             .await;
             res
-        } else if self.state.is_locked() && !self.state.is_expired() {
+        } else if self.is_locked().await && !self.is_expired().await {
             // It's locked by someone else and lock is actual.
             // Sleep up to the expiration time of the lock.
             debug!(
-                identity = %self.params.identity, holder = self.state.holder.as_ref().unwrap(),
+                identity = %self.params.identity, holder = self.state.read().await.holder.as_ref().unwrap(),
                 "lease is actually locked by other identity"
             );
-            tokio::time::sleep(self.grace_sleep_duration(0)).await;
+            tokio::time::sleep(self.grace_sleep_duration(self.expiry().await, 0)).await;
             Ok(())
         } else {
             // Something wrong happened
@@ -396,17 +418,32 @@ impl LeaseManager {
         }
     }
 
-    fn grace_sleep_duration(&self, grace: DurationSeconds) -> Duration {
+    async fn is_expired(&self) -> bool {
+        self.state.read().await.is_expired()
+    }
+
+    async fn is_locked(&self) -> bool {
+        self.state.read().await.is_locked()
+    }
+
+    async fn is_holder(&self) -> bool {
+        self.state.read().await.is_holder(&self.params.identity)
+    }
+
+    async fn expiry(&self) -> SystemTime {
+        self.state.read().await.expiry
+    }
+
+    fn grace_sleep_duration(&self, expiry: SystemTime, grace: DurationSeconds) -> Duration {
         let grace = Duration::from_secs(grace);
-        self.state
-            .expiry
+        expiry
             .duration_since(SystemTime::now())
             .unwrap_or(Duration::ZERO)
             .saturating_sub(grace)
     }
 }
 
-fn random_duration(min_millis: u64, max_millis: u64) -> Duration {
+fn random_duration(min_millis: DurationMillis, max_millis: DurationMillis) -> Duration {
     Duration::from_millis(thread_rng().gen_range(min_millis..max_millis))
 }
 
@@ -457,8 +494,8 @@ mod tests {
     }
 
     async fn setup_simple_leaders_vec(lease_name: &str, count: usize) -> (Vec<LeaseParams>, Vec<LeaseState>) {
-        const LEASE_DURATION_SECONDS: u64 = 2;
-        const LEASE_GRACE_SECONDS: u64 = 1;
+        const LEASE_DURATION_SECONDS: DurationSeconds = 2;
+        const LEASE_GRACE_SECONDS: DurationSeconds = 1;
 
         let client = init().await;
         let mut params = vec![];
@@ -479,8 +516,8 @@ mod tests {
     }
 
     async fn setup_simple_managers_vec(lease_name: &str, count: usize) -> Vec<LeaseManager> {
-        const LEASE_DURATION_SECONDS: u64 = 2;
-        const LEASE_GRACE_SECONDS: u64 = 1;
+        const LEASE_DURATION_SECONDS: DurationSeconds = 2;
+        const LEASE_GRACE_SECONDS: DurationSeconds = 1;
 
         let client = init().await;
         let mut managers = vec![];
@@ -492,7 +529,7 @@ mod tests {
         }
 
         // Create lease
-        let _ = managers[0].state.create().await.unwrap();
+        let _ = managers[0].state.read().await.create().await.unwrap();
         managers
     }
 
@@ -840,35 +877,37 @@ mod tests {
     #[tokio::test]
     async fn grace_sleep_duration() {
         let client = Client::try_default().await.unwrap();
-        let mut manager = LeaseManager::new(client, "lease_name", "namespace", LeaseParams::default());
+        let manager = LeaseManager::new(client, "lease_name", "namespace", LeaseParams::default());
 
         // Already expired - always ZERO
-        manager.state.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+        let expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+        manager.state.write().await.expiry = expiry;
         assert_eq!(
-            manager.grace_sleep_duration(0),
+            manager.grace_sleep_duration(expiry, 0),
             Duration::ZERO,
             "should be ZERO since it's already expired"
         );
         assert_eq!(
-            manager.grace_sleep_duration(1),
+            manager.grace_sleep_duration(expiry, 1),
             Duration::ZERO,
             "should be ZERO since it's already expired"
         );
 
         // Expires in 10s
-        manager.state.expiry = SystemTime::now().checked_add(Duration::from_secs(10)).unwrap();
-        let duration = manager.grace_sleep_duration(0);
+        let expiry = SystemTime::now().checked_add(Duration::from_secs(10)).unwrap();
+        manager.state.write().await.expiry = expiry;
+        let duration = manager.grace_sleep_duration(expiry, 0);
         assert!(
             duration >= Duration::from_millis(9_900) && duration <= Duration::from_millis(10_000),
             "should be around 10s"
         );
-        let duration = manager.grace_sleep_duration(1);
+        let duration = manager.grace_sleep_duration(expiry, 1);
         assert!(
             duration >= Duration::from_millis(8_900) && duration <= Duration::from_millis(9_000),
             "should be around 9s"
         );
         assert_eq!(
-            manager.grace_sleep_duration(10),
+            manager.grace_sleep_duration(expiry, 10),
             Duration::ZERO,
             "should be around ZERO"
         );
@@ -878,33 +917,33 @@ mod tests {
     async fn single_manager_watcher_step() {
         const LEASE_NAME: &str = "single-manager-watcher-step-test";
 
-        let mut managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
+        let managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
         assert!(!managers[0].is_leader.load(Ordering::Relaxed));
-        assert!(!managers[0].state.is_holder(&managers[0].params.identity));
-        assert!(!managers[0].state.is_locked());
+        assert!(!managers[0].state.read().await.is_holder(&managers[0].params.identity));
+        assert!(!managers[0].state.read().await.is_locked());
 
         managers[0].watcher_step().await.unwrap();
         assert!(!managers[0].is_leader.load(Ordering::Relaxed));
-        assert!(managers[0].state.is_holder(&managers[0].params.identity));
-        assert!(managers[0].state.is_locked());
-        assert!(!managers[0].state.is_expired());
+        assert!(managers[0].state.read().await.is_holder(&managers[0].params.identity));
+        assert!(managers[0].state.read().await.is_locked());
+        assert!(!managers[0].state.read().await.is_expired());
 
         // Expire
         sleep_secs(managers[0].params.duration).await;
         assert!(!managers[0].is_leader.load(Ordering::Relaxed));
-        assert!(managers[0].state.is_holder(&managers[0].params.identity));
-        assert!(managers[0].state.is_locked());
-        assert!(managers[0].state.is_expired());
+        assert!(managers[0].state.read().await.is_holder(&managers[0].params.identity));
+        assert!(managers[0].state.read().await.is_locked());
+        assert!(managers[0].state.read().await.is_expired());
 
         // Clean up
-        managers[0].state.delete().await.unwrap();
+        managers[0].state.read().await.delete().await.unwrap();
     }
 
     #[tokio::test]
     async fn single_manager_changed_loop() {
         const LEASE_NAME: &str = "single-manager-changed-loop-test";
 
-        let mut managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
+        let managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
         assert!(!managers[0].is_leader.load(Ordering::Relaxed));
 
         let is_leader = managers[0].changed().await.unwrap();
@@ -923,7 +962,7 @@ mod tests {
         assert!(managers[0].is_leader.load(Ordering::Relaxed));
 
         // Clean up
-        managers[0].state.delete().await.unwrap();
+        managers[0].state.read().await.delete().await.unwrap();
     }
 
     #[tokio::test]
@@ -931,8 +970,8 @@ mod tests {
         const LEASE_NAME: &str = "two-managers-1st-expires-then-2nd-locks-test";
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
-        let mut manager0 = managers.pop().unwrap();
-        let mut manager1 = managers.pop().unwrap();
+        let manager0 = managers.pop().unwrap();
+        let manager1 = managers.pop().unwrap();
 
         assert!(!manager0.is_leader.load(Ordering::Relaxed));
         assert!(!manager1.is_leader.load(Ordering::Relaxed));
@@ -972,7 +1011,7 @@ mod tests {
         assert!(!manager0.is_leader.load(Ordering::Relaxed));
 
         // Clean up
-        manager0.state.delete().await.unwrap();
+        manager0.state.read().await.delete().await.unwrap();
     }
 
     #[tokio::test]
@@ -1057,6 +1096,6 @@ mod tests {
         }
 
         // Clean up
-        managers[0].state.delete().await.unwrap();
+        managers[0].state.read().await.delete().await.unwrap();
     }
 }
