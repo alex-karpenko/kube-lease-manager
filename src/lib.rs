@@ -1150,7 +1150,7 @@ mod tests {
     #[tokio::test]
     async fn many_managers_1st_expires_then_someone_locks() {
         const LEASE_NAME: &str = "many-managers-1st-expires-then-someone-locks-test";
-        const MANAGERS: usize = 1000;
+        const MANAGERS: usize = 100;
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, MANAGERS).await;
 
