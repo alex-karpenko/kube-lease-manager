@@ -1,8 +1,8 @@
 [package]
-name = "kube-lease"
+name = "kube-lease-manager"
 authors = ["Oleksii Karpenko <alexkarpenko@yahoo.com>"]
 categories = ["api-bindings", "asynchronous"]
-description = "Leader election using Kubernetes Lease API."
+description = "Conveneient helper for leader election using Kubernetes Lease API."
 edition = "2021"
 rust-version = "1.75"
 homepage = "https://github.com/alex-karpenko/kube-lease"
