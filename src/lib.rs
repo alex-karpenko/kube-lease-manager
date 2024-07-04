@@ -698,7 +698,39 @@ mod tests {
         let _params = LeaseParams::new(random_string(10), 2, 3);
     }
 
+    #[test]
+    fn random_100_000_8ch_strings() {
+        const SET_LEN: usize = 100_000;
+
+        let mut set = HashSet::new();
+        for _ in 0..SET_LEN {
+            set.insert(random_string(8));
+        }
+
+        assert_eq!(set.len(), SET_LEN);
+    }
+
+    #[test]
+    fn random_100_intervals() {
+        const SET_LEN: usize = 100;
+
+        let mut set = HashSet::new();
+        for _ in 0..SET_LEN {
+            set.insert(random_duration(
+                DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS,
+                DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS,
+            ));
+        }
+
+        assert!(
+            set.len() >= SET_LEN * 8 / 10,
+            "at least 80% of randoms should be unique, but got {}%",
+            set.len()
+        );
+    }
+
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn rough_create_delete() {
         const LEASE_NAME: &str = "rough-create-delete-test";
 
@@ -715,6 +747,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn simple_soft_lock_soft_release() {
         const LEASE_NAME: &str = "simple-soft-lock-soft-release-test";
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 1).await;
@@ -741,6 +774,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn soft_lock_1st_soft_release_2nd() {
         const LEASE_NAME: &str = "soft-lock-1st-soft-release-2nd-test";
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
@@ -793,6 +827,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn soft_lock_1st_force_release_2nd() {
         const LEASE_NAME: &str = "soft-lock-1st-force-release-2nd-test";
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
@@ -827,6 +862,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn soft_lock_1st_soft_lock_2nd() {
         const LEASE_NAME: &str = "soft-lock-1st-soft-lock-2nd-test";
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
@@ -879,6 +915,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn unattended_soft_lock_1st_soft_lock_2nd() {
         const LEASE_NAME: &str = "unattended-soft-lock-1st-soft-lock-2nd-test";
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
@@ -918,6 +955,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn unattended_soft_lock_1st_force_lock_2nd() {
         const LEASE_NAME: &str = "unattended-soft-lock-1st-force-lock-2nd-test";
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
@@ -957,38 +995,8 @@ mod tests {
         states[0].delete().await.unwrap();
     }
 
-    #[test]
-    fn random_100_000_8ch_strings() {
-        const SET_LEN: usize = 100_000;
-
-        let mut set = HashSet::new();
-        for _ in 0..SET_LEN {
-            set.insert(random_string(8));
-        }
-
-        assert_eq!(set.len(), SET_LEN);
-    }
-
-    #[test]
-    fn random_100_intervals() {
-        const SET_LEN: usize = 100;
-
-        let mut set = HashSet::new();
-        for _ in 0..SET_LEN {
-            set.insert(random_duration(
-                DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS,
-                DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS,
-            ));
-        }
-
-        assert!(
-            set.len() >= SET_LEN * 8 / 10,
-            "at least 80% of randoms should be unique, but got {}%",
-            set.len()
-        );
-    }
-
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn deleted_lease_state() {
         const LEASE_NAME: &str = "deleted-lease-state-test";
 
@@ -1006,6 +1014,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn grace_sleep_duration() {
         let client = Client::try_default().await.unwrap();
         let manager = LeaseManager::new(
@@ -1053,6 +1062,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn single_manager_watcher_step() {
         const LEASE_NAME: &str = "single-manager-watcher-step-test";
 
@@ -1079,6 +1089,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn single_manager_changed_loop() {
         const LEASE_NAME: &str = "single-manager-changed-loop-test";
 
@@ -1105,6 +1116,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn two_managers_1st_expires_then_2nd_locks() {
         const LEASE_NAME: &str = "two-managers-1st-expires-then-2nd-locks-test";
 
@@ -1154,6 +1166,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn many_managers_1st_expires_then_someone_locks() {
         const LEASE_NAME: &str = "many-managers-1st-expires-then-someone-locks-test";
         const MANAGERS: usize = 100;
@@ -1239,6 +1252,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn create_lease() {
         const LEASE_NAME: &str = "create-lease-test";
 
@@ -1298,6 +1312,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn two_managers_1st_releases_then_2nd_locks() {
         const LEASE_NAME: &str = "two-managers-1st-releases-then-2nd-locks-test";
 
@@ -1347,6 +1362,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn update_lease_with_conflict() {
         const LEASE_NAME: &str = "update-lease-with-conflict-test";
 

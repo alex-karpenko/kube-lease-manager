@@ -34,13 +34,13 @@ jobs:
         env:
           CI: true
           RUSTFLAGS: -Cinstrument-coverage
-          LLVM_PROFILE_FILE: kube-lease-%p-%m.profraw
+          LLVM_PROFILE_FILE: kube-lease-manager-%p-%m.profraw
           RUST_LOG: debug
         run: cargo test --lib --all -- --include-ignored
 
       - name: Generate coverage
         run: |
-          grcov/grcov $(find . -name "kube-lease-*.profraw" -print) \
+          grcov/grcov $(find . -name "kube-lease-manager-*.profraw" -print) \
             --branch \
             --ignore-not-existing \
             --binary-path ./target/debug/ \
