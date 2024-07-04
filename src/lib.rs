@@ -272,10 +272,19 @@ impl LeaseState {
                     "renewTime": MicroTime(now),
                     "holderIdentity": params.identity,
                     "leaseDurationSeconds": lease_duration_seconds,
+                },
+            });
+            let patch = Patch::Apply(patch);
+            self.patch(params, &patch).await?;
+
+            let patch = serde_json::json!({
+                "apiVersion": "coordination.k8s.io/v1",
+                "kind": "Lease",
+                "spec": {
                     "leaseTransitions": self.transitions + 1,
                 },
             });
-            Patch::Apply(patch)
+            Patch::Strategic(patch)
         } else if opts == LeaseLockOpts::Force {
             // if it's locked by someone else but force is requested - try to lock it with force
             let patch = serde_json::json!({
@@ -307,6 +316,9 @@ impl LeaseState {
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
+                // "metadata": {
+                //     "managedFields": [{}]
+                // },
                 "spec": {
                     "acquireTime": Option::<()>::None,
                     "renewTime": Option::<()>::None,
@@ -330,13 +342,16 @@ impl LeaseState {
 
         let params = PatchParams {
             field_manager: Some(params.field_manager()),
-            force: matches!(patch, Patch::Apply(_)),
+            // force: matches!(patch, Patch::Apply(_)),
             ..Default::default()
         };
 
         match self.api.patch(&self.lease_name, &params, patch).await {
             Ok(_) => Ok(()),
-            Err(kube::Error::Api(err)) if err.reason == "Conflict" && err.code == 409 => Err(LeaseError::LockConflict),
+            Err(kube::Error::Api(err)) if err.reason == "Conflict" && err.code == 409 => {
+                debug!(error = ?err, "patch conflict detected");
+                Err(LeaseError::LockConflict)
+            }
             Err(err) => Err(LeaseError::KubeError(err)),
         }
     }
@@ -427,7 +442,18 @@ impl LeaseManager {
             }
 
             // Make single iteration, if no changes so far
-            self.watcher_step().await?;
+            match self.watcher_step().await {
+                Ok(_) => {
+                    // Reset backoff and continue
+                    continue;
+                }
+                Err(LeaseError::LockConflict) => {
+                    // Wait for backoff interval and continue
+                    tokio::time::sleep(random_duration(10, 100)).await;
+                    continue;
+                }
+                Err(err) => return Err(err),
+            }
         }
     }
 
@@ -1124,7 +1150,7 @@ mod tests {
     #[tokio::test]
     async fn many_managers_1st_expires_then_someone_locks() {
         const LEASE_NAME: &str = "many-managers-1st-expires-then-someone-locks-test";
-        const MANAGERS: usize = 10;
+        const MANAGERS: usize = 1000;
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, MANAGERS).await;
 
@@ -1312,5 +1338,37 @@ mod tests {
 
         // Clean up
         manager0.state.read().await.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_lease_with_conflict() {
+        const LEASE_NAME: &str = "update-lease-with-conflict-test";
+
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
+
+        // Lock lease ordinary
+        states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
+        states[1].sync(LeaseLockOpts::Force).await.unwrap();
+
+        // if lock is orphan - try to lock it softly
+        let now: DateTime<Utc> = SystemTime::now().into();
+        let patch = serde_json::json!({
+            "apiVersion": "coordination.k8s.io/v1",
+            "kind": "Lease",
+            "spec": {
+                "acquireTime": MicroTime(now),
+                "renewTime": MicroTime(now),
+                "holderIdentity": params[1].identity,
+                "leaseDurationSeconds": params[1].duration,
+                "leaseTransitions": states[1].transitions + 1,
+            },
+        });
+
+        let patch = Patch::Apply(patch);
+        let result = states[1].patch(&params[1], &patch).await;
+        assert!(result.is_err());
+        assert!(matches!(result, Err(LeaseError::LockConflict)));
+
+        states[0].delete().await.unwrap();
     }
 }

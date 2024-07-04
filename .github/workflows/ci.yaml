@@ -50,4 +50,4 @@ jobs:
       - name: Test
         env:
           RUST_LOG: kube_lease=debug
-        run: cargo test --lib --all many_managers_1st_expires_then_someone_locks -- --include-ignored
+        run: cargo test --lib --all -- --include-ignored
