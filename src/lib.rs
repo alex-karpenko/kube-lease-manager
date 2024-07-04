@@ -24,7 +24,7 @@ type DurationMillis = u64;
 /// Since all Durations related to Lease resource are in seconds, this alias is useful.
 pub type DurationSeconds = u64;
 /// Convenient alias for `Result`.
-pub type Result<T, E = LeaseError> = std::result::Result<T, E>;
+pub type Result<T, E = LeaseManagerError> = std::result::Result<T, E>;
 
 pub const DEFAULT_LEASE_DURATION_SECONDS: DurationSeconds = 30;
 pub const DEFAULT_LEASE_GRACE_SECONDS: DurationSeconds = 5;
@@ -37,7 +37,7 @@ const DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS: DurationMillis = 1000;
 
 /// Represents `kube-lease` specific errors.
 #[derive(thiserror::Error, Debug)]
-pub enum LeaseError {
+pub enum LeaseManagerError {
     /// Error originated from the Kubernetes.
     #[error("Kube error: {0}")]
     KubeError(
@@ -160,6 +160,7 @@ impl Default for LeaseParams {
 }
 
 impl LeaseState {
+    /// Constructor
     async fn new(
         client: Client,
         lease_name: impl Into<String>,
@@ -205,7 +206,7 @@ impl LeaseState {
             let result = self.get().await;
 
             // If Lease doesn't exist - clear state before exiting
-            if let Err(LeaseError::NonexistentLease(_)) = &result {
+            if let Err(LeaseManagerError::NonexistentLease(_)) = &result {
                 self.holder = None;
                 self.transitions = 0;
                 self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
@@ -350,9 +351,9 @@ impl LeaseState {
             Ok(_) => Ok(()),
             Err(kube::Error::Api(err)) if err.reason == "Conflict" && err.code == 409 => {
                 debug!(error = ?err, "patch conflict detected");
-                Err(LeaseError::LockConflict)
+                Err(LeaseManagerError::LockConflict)
             }
-            Err(err) => Err(LeaseError::KubeError(err)),
+            Err(err) => Err(LeaseManagerError::KubeError(err)),
         }
     }
 
@@ -362,8 +363,10 @@ impl LeaseState {
         // Map error is it doesn't exists
         match result {
             Ok(lease) => Ok(lease),
-            Err(kube::Error::Api(err)) if err.code == 404 => Err(LeaseError::NonexistentLease(self.lease_name.clone())),
-            Err(err) => Err(LeaseError::KubeError(err)),
+            Err(kube::Error::Api(err)) if err.code == 404 => {
+                Err(LeaseManagerError::NonexistentLease(self.lease_name.clone()))
+            }
+            Err(err) => Err(LeaseManagerError::KubeError(err)),
         }
     }
 
@@ -384,8 +387,8 @@ impl LeaseState {
                 // Create if it doesn't exist
                 if let Ok(lease) = result {
                     Ok(lease)
-                } else if let Err(LeaseError::NonexistentLease(_)) = result {
-                    self.api.create(&pp, &data).await.map_err(LeaseError::from)
+                } else if let Err(LeaseManagerError::NonexistentLease(_)) = result {
+                    self.api.create(&pp, &data).await.map_err(LeaseManagerError::from)
                 } else {
                     result
                 }
@@ -394,9 +397,9 @@ impl LeaseState {
                 // Get it and fail if it exists,
                 // Create if else
                 if result.is_ok() {
-                    Err(LeaseError::LeaseAlreadyExists(self.lease_name.clone()))
+                    Err(LeaseManagerError::LeaseAlreadyExists(self.lease_name.clone()))
                 } else {
-                    self.api.create(&pp, &data).await.map_err(LeaseError::from)
+                    self.api.create(&pp, &data).await.map_err(LeaseManagerError::from)
                 }
             }
             LeaseCreateMode::UseExistent => {
@@ -410,6 +413,7 @@ impl LeaseState {
 }
 
 impl LeaseManager {
+    /// Constructor
     pub async fn new(
         client: Client,
         lease_name: &str,
@@ -423,6 +427,8 @@ impl LeaseManager {
             is_leader: AtomicBool::new(false),
         })
     }
+
+    pub async fn watch(&self) /* -> (channel, handler) */ {}
 
     /// Try to lock lease and renew it periodically to prevent expiration.
     ///
@@ -447,7 +453,7 @@ impl LeaseManager {
                     // Reset backoff and continue
                     continue;
                 }
-                Err(LeaseError::LockConflict) => {
+                Err(LeaseManagerError::LockConflict) => {
                     // Wait for backoff interval and continue
                     tokio::time::sleep(random_duration(10, 100)).await;
                     continue;
@@ -510,7 +516,7 @@ impl LeaseManager {
         } else {
             // Something wrong happened
             error!(?self, "unreachable branch, looks like a BUG!");
-            Err(LeaseError::InconsistentState(
+            Err(LeaseManagerError::InconsistentState(
                 "unreachable branch, looks like a BUG!".into(),
             ))
         }
@@ -993,7 +999,7 @@ mod tests {
 
         let result = states[0].sync(LeaseLockOpts::Force).await;
         assert!(result.is_err());
-        assert!(matches!(result.err().unwrap(), LeaseError::NonexistentLease(_)));
+        assert!(matches!(result.err().unwrap(), LeaseManagerError::NonexistentLease(_)));
         assert!(states[0].holder.is_none());
         assert_eq!(states[0].transitions, 0);
         assert!(states[0].is_expired());
@@ -1245,7 +1251,7 @@ mod tests {
         assert!(
             matches!(
                 LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::UseExistent).await,
-                Err(LeaseError::NonexistentLease(_))
+                Err(LeaseManagerError::NonexistentLease(_))
             ),
             "lease exists but shouldn't"
         );
@@ -1274,7 +1280,7 @@ mod tests {
         assert!(
             matches!(
                 LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::CreateNew).await,
-                Err(LeaseError::LeaseAlreadyExists(_))
+                Err(LeaseManagerError::LeaseAlreadyExists(_))
             ),
             "lease should exist"
         );
@@ -1367,7 +1373,7 @@ mod tests {
         let patch = Patch::Apply(patch);
         let result = states[1].patch(&params[1], &patch).await;
         assert!(result.is_err());
-        assert!(matches!(result, Err(LeaseError::LockConflict)));
+        assert!(matches!(result, Err(LeaseManagerError::LockConflict)));
 
         states[0].delete().await.unwrap();
     }
