@@ -86,12 +86,7 @@ mod tests {
         init_tracing();
 
         let mut backoff = BackoffSleep::new(MIN, MAX, MULT);
-        let v: Vec<Duration> = (0..55)
-            .into_iter()
-            .borrow_mut()
-            .map(|_| backoff.next())
-            .skip(50)
-            .collect();
+        let v: Vec<Duration> = (0..55).borrow_mut().map(|_| backoff.next()).skip(50).collect();
         for d in v {
             assert!(d <= Duration::from_secs_f64(MAX));
             assert!(d >= Duration::from_secs_f64(MAX / MULT));
