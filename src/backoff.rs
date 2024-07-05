@@ -58,6 +58,8 @@ impl BackoffSleep {
 
 #[cfg(test)]
 mod tests {
+    use std::borrow::BorrowMut;
+
     use super::*;
     use crate::tests::init_tracing;
 
@@ -72,6 +74,27 @@ mod tests {
             let next = backoff.next();
             assert!(next > prev);
             prev = next;
+        }
+    }
+
+    #[test]
+    fn ensure_long_less_then_max() {
+        const MIN: DurationFloat = 0.1;
+        const MAX: DurationFloat = 10.0;
+        const MULT: f64 = 2.0;
+
+        init_tracing();
+
+        let mut backoff = BackoffSleep::new(MIN, MAX, MULT);
+        let v: Vec<Duration> = (0..55)
+            .into_iter()
+            .borrow_mut()
+            .map(|_| backoff.next())
+            .skip(50)
+            .collect();
+        for d in v {
+            assert!(d <= Duration::from_secs_f64(MAX));
+            assert!(d >= Duration::from_secs_f64(MAX / MULT));
         }
     }
 }
