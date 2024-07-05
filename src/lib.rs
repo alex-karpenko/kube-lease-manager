@@ -156,6 +156,10 @@ impl LeaseManager {
         })
     }
 
+    /// Spawns Tokio task and watch on leader changes permanently.
+    /// If self state changes (became a leader or lost the lock) it sends actual lock state to the channel.
+    /// Exits if channel is closed (all receivers are gone) or in case of any sending error.
+    ///
     pub async fn watch(self) -> (tokio::sync::watch::Receiver<bool>, JoinHandle<()>) {
         let (sender, receiver) = tokio::sync::watch::channel(self.is_leader.load(Ordering::Relaxed));
         let watcher = async move {
