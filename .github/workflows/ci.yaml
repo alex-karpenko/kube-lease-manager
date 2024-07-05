@@ -54,5 +54,5 @@ jobs:
 
       - name: Heavy tests
         env:
-          RUST_LOG: kube_lease=debug
+          RUST_LOG: kube_lease_manager=debug
         run: cargo test --lib --all -- --ignored

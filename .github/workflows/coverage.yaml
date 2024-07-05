@@ -35,7 +35,7 @@ jobs:
           CI: true
           RUSTFLAGS: -Cinstrument-coverage
           LLVM_PROFILE_FILE: kube-lease-manager-%p-%m.profraw
-          RUST_LOG: debug
+          RUST_LOG: kube_lease_manager=debug
         run: cargo test --lib --all -- --include-ignored
 
       - name: Generate coverage

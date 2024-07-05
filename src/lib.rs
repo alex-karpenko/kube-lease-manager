@@ -1,5 +1,8 @@
 #![deny(unsafe_code)]
 
+mod backoff;
+
+use backoff::{BackoffSleep, DurationFloat};
 use k8s_openapi::{
     api::coordination::v1::Lease,
     apimachinery::pkg::apis::meta::v1::MicroTime,
@@ -32,8 +35,12 @@ pub const DEFAULT_LEASE_GRACE_SECONDS: DurationSeconds = 5;
 const DEFAULT_RANDOM_IDENTITY_LEN: usize = 32;
 const DEFAULT_FIELD_MANAGER_PREFIX: &str = env!("CARGO_PKG_NAME");
 
-const DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS: DurationMillis = 100;
-const DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS: DurationMillis = 1000;
+const MIN_RELEASE_WAITING_MILLIS: DurationMillis = 100;
+const MAX_RELEASE_WAITING_MILLIS: DurationMillis = 1000;
+
+const MIN_CONFLICT_BACKOFF_TIME: DurationFloat = 0.1;
+const MAX_CONFLICT_BACKOFF_TIME: DurationFloat = 5.0;
+const CONFLICT_BACKOFF_MULT: DurationFloat = 2.0;
 
 /// Represents `kube-lease` specific errors.
 #[derive(thiserror::Error, Debug)]
@@ -434,6 +441,12 @@ impl LeaseManager {
     ///
     /// Returns self leader lock status as soon as it was changed (acquired or released).
     pub async fn changed(&self) -> Result<bool> {
+        let mut backoff = BackoffSleep::new(
+            MIN_CONFLICT_BACKOFF_TIME,
+            MAX_CONFLICT_BACKOFF_TIME,
+            CONFLICT_BACKOFF_MULT,
+        );
+
         loop {
             // re-sync state if needed
             self.state.write().await.sync(LeaseLockOpts::Soft).await?;
@@ -450,13 +463,12 @@ impl LeaseManager {
             // Make single iteration, if no changes so far
             match self.watcher_step().await {
                 Ok(_) => {
-                    // Reset backoff and continue
-                    continue;
+                    // reset backoff and continue
+                    backoff.reset();
                 }
                 Err(LeaseManagerError::LockConflict) => {
                     // Wait for backoff interval and continue
-                    tokio::time::sleep(random_duration(10, 100)).await;
-                    continue;
+                    backoff.sleep().await;
                 }
                 Err(err) => return Err(err),
             }
@@ -498,11 +510,7 @@ impl LeaseManager {
                 .await;
 
             // Sleep some random time (up to 500ms) to minimize collisions probability
-            tokio::time::sleep(random_duration(
-                DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS,
-                DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS,
-            ))
-            .await;
+            tokio::time::sleep(random_duration(MIN_RELEASE_WAITING_MILLIS, MAX_RELEASE_WAITING_MILLIS)).await;
             res
         } else if self.is_locked().await && !self.is_expired().await {
             // It's locked by someone else and lock is actual.
@@ -566,24 +574,31 @@ mod tests {
     use futures::future::select_all;
     use k8s_openapi::api::{coordination::v1::LeaseSpec, core::v1::Namespace};
     use kube::{api::DeleteParams, Resource as _};
-    use std::collections::HashSet;
+    use std::{collections::HashSet, sync::OnceLock};
     use tokio::{select, sync::OnceCell};
 
     const TEST_NAMESPACE: &str = "kube-lease-test";
 
     static INITIALIZED: OnceCell<bool> = OnceCell::const_new();
+    static TRACING: OnceLock<()> = OnceLock::new();
 
     async fn init() -> Client {
         let client = Client::try_default().await.unwrap();
         INITIALIZED
             .get_or_init(|| async {
                 create_namespace(client.clone()).await;
-                tracing_subscriber::fmt::init();
+                init_tracing();
                 true
             })
             .await;
 
         client
+    }
+
+    pub(crate) fn init_tracing() {
+        TRACING.get_or_init(|| {
+            tracing_subscriber::fmt::init();
+        });
     }
 
     /// Unattended namespace creation
@@ -716,10 +731,7 @@ mod tests {
 
         let mut set = HashSet::new();
         for _ in 0..SET_LEN {
-            set.insert(random_duration(
-                DEFAULT_MIN_RANDOM_RELEASE_WAITING_MILLIS,
-                DEFAULT_MAX_RANDOM_RELEASE_WAITING_MILLIS,
-            ));
+            set.insert(random_duration(MIN_RELEASE_WAITING_MILLIS, MAX_RELEASE_WAITING_MILLIS));
         }
 
         assert!(
