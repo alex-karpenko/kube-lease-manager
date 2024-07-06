@@ -6,7 +6,7 @@ mod state;
 use backoff::{BackoffSleep, DurationFloat};
 use kube::Client;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
-use state::{LeaseLockOpts, LeaseState};
+use state::{LeaseLockOpts, LeaseState, LeaseStateError};
 use std::{
     fmt::Debug,
     sync::atomic::{AtomicBool, Ordering},
@@ -50,14 +50,10 @@ pub enum LeaseManagerError {
         kube::Error,
     ),
 
-    /// Conflict detected during locking attempt.
-    #[error("lock conflict detected")]
-    LockConflict,
-
     /// Internal lease state inconsistency detected.
     ///
     /// Usually root cause is a bug.
-    #[error("inconsistent kube-lease state detected: {0}")]
+    #[error("inconsistent LeaseManager state detected: {0}")]
     InconsistentState(String),
 
     /// Try to create Lease but it already exists.
@@ -89,6 +85,18 @@ pub enum LeaseCreateMode {
     UseExistent,
     #[cfg(test)]
     Ignore,
+}
+
+impl From<LeaseStateError> for LeaseManagerError {
+    fn from(value: LeaseStateError) -> Self {
+        match value {
+            LeaseStateError::LockConflict => unreachable!("this branch is unreachable, looks like a BUG!"),
+            LeaseStateError::KubeError(err) => LeaseManagerError::KubeError(err),
+            LeaseStateError::LeaseAlreadyExists(lease) => LeaseManagerError::LeaseAlreadyExists(lease),
+            LeaseStateError::NonexistentLease(lease) => LeaseManagerError::NonexistentLease(lease),
+            LeaseStateError::InconsistentState(err) => LeaseManagerError::InconsistentState(err),
+        }
+    }
 }
 
 /// Lease lock manager.
@@ -223,11 +231,11 @@ impl LeaseManager {
                     // reset backoff and continue
                     backoff.reset();
                 }
-                Err(LeaseManagerError::LockConflict) => {
+                Err(LeaseStateError::LockConflict) => {
                     // Wait for backoff interval and continue
                     backoff.sleep().await;
                 }
-                Err(err) => return Err(err),
+                Err(err) => return Err(LeaseManagerError::from(err)),
             }
         }
     }
@@ -241,9 +249,10 @@ impl LeaseManager {
             .await
             .release(&self.params, LeaseLockOpts::Soft)
             .await
+            .map_err(LeaseManagerError::from)
     }
 
-    async fn watcher_step(&self) -> Result<()> {
+    async fn watcher_step(&self) -> Result<(), LeaseStateError> {
         if self.is_holder().await {
             // if we're holder of the lock - sleep up to the next refresh time,
             // and renew lock (lock it softly)
@@ -279,7 +288,7 @@ impl LeaseManager {
         } else {
             // Something wrong happened
             error!(?self, "unreachable branch, looks like a BUG!");
-            Err(LeaseManagerError::InconsistentState(
+            Err(LeaseStateError::InconsistentState(
                 "unreachable branch, looks like a BUG!".into(),
             ))
         }
@@ -722,7 +731,7 @@ mod tests {
         assert!(
             matches!(
                 LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::UseExistent).await,
-                Err(LeaseManagerError::NonexistentLease(_))
+                Err(LeaseStateError::NonexistentLease(_))
             ),
             "lease exists but shouldn't"
         );
@@ -751,7 +760,7 @@ mod tests {
         assert!(
             matches!(
                 LeaseState::new(client.clone(), LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::CreateNew).await,
-                Err(LeaseManagerError::LeaseAlreadyExists(_))
+                Err(LeaseStateError::LeaseAlreadyExists(_))
             ),
             "lease should exist"
         );

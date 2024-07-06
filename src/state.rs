@@ -1,4 +1,4 @@
-use crate::{DurationSeconds, LeaseCreateMode, LeaseManagerError, LeaseParams, Result};
+use crate::{DurationSeconds, LeaseCreateMode, LeaseParams, Result};
 use k8s_openapi::{
     api::coordination::v1::Lease,
     apimachinery::pkg::apis::meta::v1::MicroTime,
@@ -31,6 +31,36 @@ pub(crate) struct LeaseState {
     transitions: i32,
 }
 
+/// Represents `kube-lease` specific errors.
+#[derive(thiserror::Error, Debug)]
+pub enum LeaseStateError {
+    /// Error originated from the Kubernetes.
+    #[error("Kube error: {0}")]
+    KubeError(
+        #[source]
+        #[from]
+        kube::Error,
+    ),
+
+    /// Conflict detected during locking attempt.
+    #[error("lock conflict detected")]
+    LockConflict,
+
+    /// Try to create Lease but it already exists.
+    #[error("Lease resource `{0}` already exists")]
+    LeaseAlreadyExists(String),
+
+    /// Try to use non-existent Lease resource.
+    #[error("Lease resource `{0}` doesn't exist")]
+    NonexistentLease(String),
+
+    /// Internal lease state inconsistency detected.
+    ///
+    /// Usually root cause is a bug.
+    #[error("inconsistent LeaseManager state detected: {0}")]
+    InconsistentState(String),
+}
+
 /// Options to use for operations with lock.
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum LeaseLockOpts {
@@ -46,7 +76,7 @@ impl LeaseState {
         lease_name: impl Into<String>,
         namespace: &str,
         create_mode: LeaseCreateMode,
-    ) -> Result<Self> {
+    ) -> Result<Self, LeaseStateError> {
         let api = Api::<Lease>::namespaced(client, namespace);
 
         let state = Self {
@@ -81,12 +111,12 @@ impl LeaseState {
     }
 
     /// Retrieve actual state from the cluster.
-    pub(crate) async fn sync(&mut self, opts: LeaseLockOpts) -> Result<()> {
+    pub(crate) async fn sync(&mut self, opts: LeaseLockOpts) -> Result<(), LeaseStateError> {
         if opts == LeaseLockOpts::Force || self.is_expired() {
             let result = self.get().await;
 
             // If Lease doesn't exist - clear state before exiting
-            if let Err(LeaseManagerError::NonexistentLease(_)) = &result {
+            if let Err(LeaseStateError::NonexistentLease(_)) = &result {
                 self.holder = None;
                 self.transitions = 0;
                 self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
@@ -125,7 +155,7 @@ impl LeaseState {
         Ok(())
     }
 
-    pub(crate) async fn lock(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<()> {
+    pub(crate) async fn lock(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<(), LeaseStateError> {
         self.sync(LeaseLockOpts::Soft).await?;
 
         let lease_duration_seconds = params.duration;
@@ -188,7 +218,7 @@ impl LeaseState {
         self.sync(LeaseLockOpts::Force).await
     }
 
-    pub(crate) async fn release(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<()> {
+    pub(crate) async fn release(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<(), LeaseStateError> {
         self.sync(LeaseLockOpts::Soft).await?;
 
         if self.is_holder(&params.identity) || self.is_expired() || opts == LeaseLockOpts::Force {
@@ -215,7 +245,7 @@ impl LeaseState {
         self.sync(LeaseLockOpts::Force).await
     }
 
-    pub(crate) async fn patch<P>(&self, params: &LeaseParams, patch: &Patch<P>) -> Result<()>
+    pub(crate) async fn patch<P>(&self, params: &LeaseParams, patch: &Patch<P>) -> Result<(), LeaseStateError>
     where
         P: Serialize + Debug,
     {
@@ -231,26 +261,26 @@ impl LeaseState {
             Ok(_) => Ok(()),
             Err(kube::Error::Api(err)) if err.reason == "Conflict" && err.code == 409 => {
                 debug!(error = ?err, "patch conflict detected");
-                Err(LeaseManagerError::LockConflict)
+                Err(LeaseStateError::LockConflict)
             }
-            Err(err) => Err(LeaseManagerError::KubeError(err)),
+            Err(err) => Err(LeaseStateError::KubeError(err)),
         }
     }
 
-    async fn get(&self) -> Result<Lease> {
+    async fn get(&self) -> Result<Lease, LeaseStateError> {
         let result = self.api.get(&self.lease_name).await;
 
         // Map error is it doesn't exists
         match result {
             Ok(lease) => Ok(lease),
             Err(kube::Error::Api(err)) if err.code == 404 => {
-                Err(LeaseManagerError::NonexistentLease(self.lease_name.clone()))
+                Err(LeaseStateError::NonexistentLease(self.lease_name.clone()))
             }
-            Err(err) => Err(LeaseManagerError::KubeError(err)),
+            Err(err) => Err(LeaseStateError::KubeError(err)),
         }
     }
 
-    pub(crate) async fn create(&self, mode: LeaseCreateMode) -> Result<Lease> {
+    pub(crate) async fn create(&self, mode: LeaseCreateMode) -> Result<Lease, LeaseStateError> {
         let result = self.get().await;
         let pp = PostParams::default();
         let data = Lease {
@@ -267,8 +297,8 @@ impl LeaseState {
                 // Create if it doesn't exist
                 if let Ok(lease) = result {
                     Ok(lease)
-                } else if let Err(LeaseManagerError::NonexistentLease(_)) = result {
-                    self.api.create(&pp, &data).await.map_err(LeaseManagerError::from)
+                } else if let Err(LeaseStateError::NonexistentLease(_)) = result {
+                    self.api.create(&pp, &data).await.map_err(LeaseStateError::from)
                 } else {
                     result
                 }
@@ -277,9 +307,9 @@ impl LeaseState {
                 // Get it and fail if it exists,
                 // Create if else
                 if result.is_ok() {
-                    Err(LeaseManagerError::LeaseAlreadyExists(self.lease_name.clone()))
+                    Err(LeaseStateError::LeaseAlreadyExists(self.lease_name.clone()))
                 } else {
-                    self.api.create(&pp, &data).await.map_err(LeaseManagerError::from)
+                    self.api.create(&pp, &data).await.map_err(LeaseStateError::from)
                 }
             }
             LeaseCreateMode::UseExistent => {
@@ -610,7 +640,7 @@ mod tests {
 
         let result = states[0].sync(LeaseLockOpts::Force).await;
         assert!(result.is_err());
-        assert!(matches!(result.err().unwrap(), LeaseManagerError::NonexistentLease(_)));
+        assert!(matches!(result.err().unwrap(), LeaseStateError::NonexistentLease(_)));
         assert!(states[0].holder.is_none());
         assert_eq!(states[0].transitions, 0);
         assert!(states[0].is_expired());
@@ -644,7 +674,7 @@ mod tests {
         let patch = Patch::Apply(patch);
         let result = states[1].patch(&params[1], &patch).await;
         assert!(result.is_err());
-        assert!(matches!(result, Err(LeaseManagerError::LockConflict)));
+        assert!(matches!(result, Err(LeaseStateError::LockConflict)));
 
         states[0].delete().await.unwrap();
     }
