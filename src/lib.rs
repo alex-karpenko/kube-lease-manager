@@ -962,7 +962,7 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn many_managers_watch_one_by_one() {
         const LEASE_NAME: &str = "many-managers-watch-one-by-one-test";
-        const NUMBER_OF_MANAGERS: usize = 5;
+        const NUMBER_OF_MANAGERS: usize = 100;
 
         let managers = setup_simple_managers_vec(LEASE_NAME, NUMBER_OF_MANAGERS).await;
 
