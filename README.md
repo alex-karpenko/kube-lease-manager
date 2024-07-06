@@ -1,2 +1,3 @@
-# kube-lease
-Leader election using Kubernetes Lease API.
+# kube-lease-manager
+
+Ergonomic and durable leader election using Kubernetes Lease API.
