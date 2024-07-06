@@ -82,6 +82,8 @@ pub struct LeaseParams {
     duration: DurationSeconds,
     /// Period of tme to renew lease lock before it expires.
     grace: DurationSeconds,
+    /// Field manager.
+    field_manager: String,
 }
 
 /// Lease resource creation mode.
@@ -130,15 +132,23 @@ impl LeaseParams {
             panic!("grace period should be less than lease lock duration");
         }
 
+        let identity = identity.into();
+        let field_manager = format!("{DEFAULT_FIELD_MANAGER_PREFIX}-{}", identity);
         Self {
-            identity: identity.into(),
+            identity,
             duration,
             grace,
+            field_manager,
         }
     }
 
+    /// Use specified field manager value instead of the default one.
+    pub fn with_field_manager(self, field_manager: String) -> Self {
+        Self { field_manager, ..self }
+    }
+
     fn field_manager(&self) -> String {
-        format!("{DEFAULT_FIELD_MANAGER_PREFIX}-{}", self.identity)
+        self.field_manager.clone()
     }
 }
 
@@ -153,6 +163,107 @@ impl Default for LeaseParams {
             DEFAULT_LEASE_DURATION_SECONDS,
             DEFAULT_LEASE_GRACE_SECONDS,
         )
+    }
+}
+
+/// Builder of [`LeaseManager`].
+///
+/// It facilitates creating of the manager instance with reasonable defaults.
+pub struct LeaseManagerBuilder {
+    client: Client,
+    lease_name: String,
+    namespace: String,
+    params: LeaseParams,
+    create_mode: LeaseCreateMode,
+}
+
+impl LeaseManagerBuilder {
+    /// Constructs minimal builder instance with all other parameters set to default values.
+    pub fn new(client: Client, lease_name: impl Into<String>) -> Self {
+        Self {
+            client,
+            lease_name: lease_name.into(),
+            namespace: String::from("default"),
+            params: LeaseParams::default(),
+            create_mode: LeaseCreateMode::default(),
+        }
+    }
+
+    /// Builds [`LeaseManager`] from the builder instance.
+    pub async fn build(self) -> Result<LeaseManager> {
+        LeaseManager::new(
+            self.client,
+            &self.lease_name,
+            &self.namespace,
+            self.params,
+            self.create_mode,
+        )
+        .await
+    }
+
+    /// Change current Lease name instead of the one provided to [`LeaseManagerBuilder::new()`].
+    pub fn with_lease_name(self, lease_name: impl Into<String>) -> Self {
+        Self {
+            lease_name: lease_name.into(),
+            ..self
+        }
+    }
+
+    /// Updates namespace to create Lease resource onto.
+    pub fn with_namespace(self, namespace: impl Into<String>) -> Self {
+        Self {
+            namespace: namespace.into(),
+            ..self
+        }
+    }
+
+    pub fn with_create_mode(self, create_mode: LeaseCreateMode) -> Self {
+        Self { create_mode, ..self }
+    }
+
+    /// Update whole LeaseParameters instance.
+    ///
+    /// There four additional methods to set each parameters' value individually.
+    pub fn with_parameters(self, params: LeaseParams) -> Self {
+        Self { params, ..self }
+    }
+
+    /// Updates parameters field manager value.
+    pub fn with_field_manager(self, field_manager: impl Into<String>) -> Self {
+        Self {
+            params: self.params.with_field_manager(field_manager.into()),
+            ..self
+        }
+    }
+
+    /// Updates Lease duration parameter.
+    pub fn with_duration(self, duration: DurationSeconds) -> Self {
+        Self {
+            params: LeaseParams {
+                duration,
+                ..self.params
+            },
+            ..self
+        }
+    }
+
+    /// Updates lease grace period parameter.
+    pub fn with_grace(self, grace: DurationSeconds) -> Self {
+        Self {
+            params: LeaseParams { grace, ..self.params },
+            ..self
+        }
+    }
+
+    /// Updates lease identity value.
+    pub fn with_identity(self, identity: impl Into<String>) -> Self {
+        Self {
+            params: LeaseParams {
+                identity: identity.into(),
+                ..self.params
+            },
+            ..self
+        }
     }
 }
 
@@ -1041,5 +1152,81 @@ mod tests {
 
         // Clean up
         managers[0].state.read().await.delete().await.unwrap();
+    }
+
+    #[test]
+    fn lease_params_constructor_with_field_manager() {
+        const CUSTOM_FIELD_MANAGER: &str = "custom-field-manager";
+
+        let fm = String::from(CUSTOM_FIELD_MANAGER);
+
+        let params = LeaseParams::default();
+        assert_ne!(params.field_manager(), CUSTOM_FIELD_MANAGER);
+
+        let params = params.with_field_manager(fm);
+        assert_eq!(params.field_manager(), CUSTOM_FIELD_MANAGER);
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
+    async fn lease_manager_builder() {
+        const LEASE_NAME0: &str = "lease-manager-builder-test-0";
+        const LEASE_NAME: &str = "lease-manager-builder-test";
+        const CUSTOM_FIELD_MANAGER0: &str = "custom-field-manager-0";
+        const CUSTOM_FIELD_MANAGER: &str = "custom-field-manager";
+        const CUSTOM_IDENTITY0: &str = "custom-lease-manager-identity-0";
+        const CUSTOM_IDENTITY: &str = "custom-lease-manager-identity";
+
+        let client = init().await;
+        let builder = LeaseManagerBuilder::new(client, LEASE_NAME0);
+
+        assert_eq!(builder.lease_name, LEASE_NAME0);
+        let builder = builder.with_lease_name(LEASE_NAME);
+        assert_eq!(builder.lease_name, LEASE_NAME);
+
+        assert_eq!(builder.namespace, "default");
+        let builder = builder.with_namespace(TEST_NAMESPACE);
+        assert_eq!(builder.namespace, TEST_NAMESPACE);
+
+        assert_eq!(builder.create_mode, LeaseCreateMode::default());
+        assert_ne!(LeaseCreateMode::default(), LeaseCreateMode::CreateNew);
+        let builder = builder.with_create_mode(LeaseCreateMode::CreateNew);
+        assert_eq!(builder.create_mode, LeaseCreateMode::CreateNew);
+
+        assert_ne!(builder.params.identity, CUSTOM_IDENTITY0);
+        let builder = builder.with_identity(CUSTOM_IDENTITY0);
+        assert_eq!(builder.params.identity, CUSTOM_IDENTITY0);
+
+        assert_ne!(builder.params.field_manager, CUSTOM_FIELD_MANAGER0);
+        let builder = builder.with_field_manager(CUSTOM_FIELD_MANAGER0);
+        assert_eq!(builder.params.field_manager(), CUSTOM_FIELD_MANAGER0);
+
+        assert_ne!(builder.params.duration, 111);
+        assert_eq!(builder.params.duration, LeaseParams::default().duration);
+        let builder = builder.with_duration(111);
+        assert_eq!(builder.params.duration, 111);
+
+        assert_ne!(builder.params.grace, 11);
+        assert_eq!(builder.params.grace, LeaseParams::default().grace);
+        let builder = builder.with_grace(11);
+        assert_eq!(builder.params.grace, 11);
+
+        let params = LeaseParams {
+            identity: CUSTOM_IDENTITY.into(),
+            duration: 222,
+            grace: 22,
+            field_manager: CUSTOM_FIELD_MANAGER.into(),
+        };
+        let builder = builder.with_parameters(params);
+        assert_eq!(builder.params.identity, CUSTOM_IDENTITY);
+        assert_eq!(builder.params.duration, 222);
+        assert_eq!(builder.params.grace, 22);
+        assert_eq!(builder.params.field_manager(), CUSTOM_FIELD_MANAGER);
+
+        let manager = builder.build().await.unwrap();
+        manager.changed().await.unwrap();
+
+        // Clean up
+        manager.state.read().await.delete().await.unwrap();
     }
 }
