@@ -267,7 +267,7 @@ impl LeaseState {
         }
     }
 
-    async fn get(&self) -> Result<Lease, LeaseStateError> {
+    pub(crate) async fn get(&self) -> Result<Lease, LeaseStateError> {
         let result = self.api.get(&self.lease_name).await;
 
         // Map error is it doesn't exists

@@ -12,7 +12,7 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
     time::{Duration, SystemTime},
 };
-use tokio::{sync::RwLock, task::JoinHandle};
+use tokio::{select, sync::RwLock, task::JoinHandle};
 use tracing::{debug, error};
 
 type DurationMillis = u64;
@@ -63,6 +63,14 @@ pub enum LeaseManagerError {
     /// Try to use non-existent Lease resource.
     #[error("Lease resource `{0}` doesn't exist")]
     NonexistentLease(String),
+
+    /// LeaseManager unable to send state to the control channel
+    #[error("Control channel error: {0}")]
+    ControlCannelError(
+        #[source]
+        #[from]
+        tokio::sync::watch::error::SendError<bool>,
+    ),
 }
 
 /// Parameters of LeaseManager.
@@ -106,7 +114,7 @@ pub struct LeaseManager {
     params: LeaseParams,
     /// Current state.
     state: RwLock<LeaseState>,
-    /// Is current identity marked as leader now
+    /// Is current identity set as leader now.
     is_leader: AtomicBool,
 }
 
@@ -168,30 +176,52 @@ impl LeaseManager {
     /// If self state changes (became a leader or lost the lock) it sends actual lock state to the channel.
     /// Exits if channel is closed (all receivers are gone) or in case of any sending error.
     ///
-    pub async fn watch(self) -> (tokio::sync::watch::Receiver<bool>, JoinHandle<()>) {
+    pub async fn watch(self) -> (tokio::sync::watch::Receiver<bool>, JoinHandle<Result<LeaseManager>>) {
         let (sender, receiver) = tokio::sync::watch::channel(self.is_leader.load(Ordering::Relaxed));
         let watcher = async move {
+            debug!("starting watch loop");
+
             let mut backoff =
                 BackoffSleep::new(MIN_WATCHER_BACKOFF_TIME, MAX_WATCHER_BACKOFF_TIME, WATCHER_BACKOFF_MULT);
+
             loop {
-                if sender.is_closed() {
-                    return;
-                }
-                match self.changed().await {
-                    Ok(state) => {
-                        let result = sender.send(state);
-                        if result.is_err() {
-                            return;
-                        }
-                        backoff.reset();
+                select! {
+                    biased;
+                    _ = sender.closed() => {
+                        // Consumer closed all receivers - release lock and exit
+                        debug!("control channel has been closed");
+                        let result = self.release().await;
+                        return match result {
+                            Ok(_) => Ok(self),
+                            Err(err) => Err(err),
+                        };
                     }
-                    Err(e) => {
-                        error!(error = %e, "LeaseManager watcher error");
-                        if sender.is_closed() {
-                            return;
-                        } else {
-                            backoff.sleep().await;
+                    result = self.changed() => {
+                        match result {
+                            Ok(state) => {
+                                let result = sender.send(state);
+                                match result {
+                                    Ok(_) => backoff.reset(),
+                                    Err(err) => {
+                                        let _ = self.release().await;
+                                        return Err(LeaseManagerError::ControlCannelError(err));
+                                    }
+                                };
+                            }
+                            Err(e) => {
+                                error!(error = %e, "LeaseManager watcher error");
+                                if sender.is_closed() {
+                                    let result = self.release().await;
+                                    return match result {
+                                        Ok(_) => Ok(self),
+                                        Err(err) => Err(err),
+                                    };
+                                } else {
+                                    backoff.sleep().await;
+                                }
+                            }
                         }
+
                     }
                 }
             }
@@ -346,7 +376,7 @@ mod tests {
         Api, Resource as _,
     };
     use std::{collections::HashSet, sync::OnceLock};
-    use tokio::{select, sync::OnceCell};
+    use tokio::{join, select, sync::OnceCell};
 
     pub(crate) const TEST_NAMESPACE: &str = "kube-lease-test";
 
@@ -825,5 +855,191 @@ mod tests {
 
         // Clean up
         manager0.state.read().await.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
+    async fn single_watch_managers_handles_own_channel() {
+        const LEASE_NAME: &str = "single-watch-managers-handle-channel-test";
+
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
+        let manager0 = managers.pop().unwrap();
+
+        assert!(!manager0.is_leader.load(Ordering::Relaxed));
+
+        // Run watcher
+        let (mut channel, handler) = manager0.watch().await;
+        // It had no time to lock
+        assert!(!*channel.borrow_and_update());
+
+        // Wait to lock lease
+        channel.changed().await.unwrap();
+        assert!(*channel.borrow_and_update());
+
+        // Try to hold lock for 3 seconds
+        select! {
+            _ = channel.changed() => {
+                unreachable!("unreachable branch since lock state has not be changed")
+            },
+            _ = sleep_secs(3) => {
+                assert!(*channel.borrow());
+            }
+        }
+        assert!(*channel.borrow());
+
+        // Close control channel and expect released lock and finished watcher
+        drop(channel);
+        let manager0 = join!(handler).0.unwrap().unwrap();
+        manager0.state.write().await.sync(LeaseLockOpts::Force).await.unwrap();
+        assert!(!manager0.is_holder().await);
+
+        // Clean up
+        manager0.state.read().await.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
+    async fn two_managers_1st_uses_changed_2nd_watch() {
+        const LEASE_NAME: &str = "two-managers-1st-uses-changed-2nd-watch-test";
+
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
+        let manager0 = managers.remove(0);
+        let manager1 = managers.remove(0);
+
+        assert!(!manager0.is_leader.load(Ordering::Relaxed));
+        assert!(!manager1.is_leader.load(Ordering::Relaxed));
+
+        // Lock by 1st
+        let is_leader = manager0.changed().await.unwrap();
+        assert!(is_leader);
+        assert!(manager0.is_leader.load(Ordering::Relaxed));
+        assert!(!manager1.is_leader.load(Ordering::Relaxed));
+
+        let (mut channel, handler) = manager1.watch().await;
+        assert!(!*channel.borrow_and_update());
+
+        // Hold lock by 1st for 3 seconds
+        select! {
+            _ = sleep_secs(3) => {
+                assert!(manager0.is_leader.load(Ordering::Relaxed));
+                assert!(!*channel.borrow_and_update());
+            }
+            _changed = manager0.changed() => {
+                unreachable!("unreachable branch since lock state has not be changed");
+            }
+            _watch = channel.changed() => {
+                unreachable!("unreachable branch since lock state has not be changed");
+            }
+        }
+        assert!(manager0.is_leader.load(Ordering::Relaxed));
+        assert!(!*channel.borrow_and_update());
+
+        // Don't touch 1st to make it expired, 2nd has to lock it
+        select! {
+            _ = sleep_secs(4) => {
+                unreachable!("unreachable branch since lock state has not be changed");
+
+            }
+            _watch = channel.changed() => {
+                assert!(*channel.borrow_and_update());
+                manager0.changed().await.unwrap();
+                assert!(!manager0.is_leader.load(Ordering::Relaxed));
+            }
+        }
+
+        // Drop channel to release 2nd and wait for 1st is changed
+        drop(channel);
+        assert!(manager0.changed().await.unwrap());
+        // And 2nd has to finish
+        let res = join!(handler).0.unwrap().unwrap();
+        assert!(!res.is_holder().await);
+
+        // Clean up
+        manager0.state.read().await.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
+    async fn many_managers_watch_one_by_one() {
+        const LEASE_NAME: &str = "many-managers-watch-one-by-one-test";
+        const NUMBER_OF_MANAGERS: usize = 5;
+
+        let managers = setup_simple_managers_vec(LEASE_NAME, NUMBER_OF_MANAGERS).await;
+
+        // ensure there is no holders
+        assert_eq!(
+            managers.iter().filter(|m| m.is_leader.load(Ordering::Relaxed)).count(),
+            0
+        );
+
+        // run watchers
+        let mut handlers = vec![];
+        let mut channels = vec![];
+        for m in managers {
+            let w = m.watch().await;
+            channels.push(w.0);
+            handlers.push(w.1);
+        }
+        // wait for at least one locked lease
+        // assert that at least one watcher get changed and only one holds lock
+        sleep_secs(3).await;
+        let changed_vec: Vec<_> = channels.iter_mut().map(|ch| Box::pin(ch.changed())).collect();
+        let (_result, index, _) = select_all(changed_vec).await;
+        assert!(*channels[index].borrow_and_update());
+        assert_eq!(
+            channels
+                .iter_mut()
+                .map(|ch| *ch.borrow_and_update())
+                .filter(|r| *r)
+                .count(),
+            1
+        );
+
+        // drop watchers one by one and assert that single lock only
+        let mut prev_index = index;
+        let mut managers = vec![];
+        while !channels.is_empty() {
+            let prev_channel = channels.remove(prev_index);
+            let prev_handler = handlers.remove(prev_index);
+            drop(prev_channel);
+            let manager = join!(prev_handler).0.unwrap().unwrap();
+            managers.push(manager);
+
+            if !channels.is_empty() {
+                // wait for new lock
+                let changed_vec: Vec<_> = channels.iter_mut().map(|ch| Box::pin(ch.changed())).collect();
+                let (_result, index, _) = select_all(changed_vec).await;
+                assert!(*channels[index].borrow_and_update());
+                assert_eq!(
+                    channels
+                        .iter_mut()
+                        .map(|ch| *ch.borrow_and_update())
+                        .filter(|r| *r)
+                        .count(),
+                    1
+                );
+
+                prev_index = index;
+            }
+        }
+
+        // assert expected number of the lease transitions
+        assert_eq!(
+            managers[0]
+                .state
+                .read()
+                .await
+                .get()
+                .await
+                .unwrap()
+                .spec
+                .unwrap()
+                .lease_transitions
+                .unwrap(),
+            NUMBER_OF_MANAGERS as i32
+        );
+
+        // Clean up
+        managers[0].state.read().await.delete().await.unwrap();
     }
 }
