@@ -52,11 +52,11 @@ pub enum LeaseManagerError {
 
     /// Internal lease state inconsistency detected.
     ///
-    /// Usually root cause is a bug.
+    /// Usually a root cause is a bug.
     #[error("inconsistent LeaseManager state detected: {0}")]
     InconsistentState(String),
 
-    /// Try to create Lease but it already exists.
+    /// Try to create a new Lease, but it already exists.
     #[error("Lease resource `{0}` already exists")]
     LeaseAlreadyExists(String),
 
@@ -66,7 +66,7 @@ pub enum LeaseManagerError {
 
     /// LeaseManager unable to send state to the control channel
     #[error("Control channel error: {0}")]
-    ControlCannelError(
+    ControlChannelError(
         #[source]
         #[from]
         tokio::sync::watch::error::SendError<bool>,
@@ -142,7 +142,7 @@ impl LeaseParams {
         }
     }
 
-    /// Use specified field manager value instead of the default one.
+    /// Use the specified field manager value instead of the default one.
     pub fn with_field_manager(self, field_manager: String) -> Self {
         Self { field_manager, ..self }
     }
@@ -154,9 +154,9 @@ impl LeaseParams {
 
 impl Default for LeaseParams {
     /// Creates parameters instance with reasonable defaults:
-    ///   - random alpha-numeric identity string;
-    ///   - lease duration is [`DEFAULT_LEASE_DURATION_SECONDS`];
-    ///   - lease grace period is [`DEFAULT_LEASE_GRACE_SECONDS`].
+    ///   - random alphanumeric identity string;
+    ///   - the lease duration is [`DEFAULT_LEASE_DURATION_SECONDS`];
+    ///   - the lease grace period is [`DEFAULT_LEASE_GRACE_SECONDS`].
     fn default() -> Self {
         Self::new(
             random_string(DEFAULT_RANDOM_IDENTITY_LEN),
@@ -201,7 +201,7 @@ impl LeaseManagerBuilder {
         .await
     }
 
-    /// Change current Lease name instead of the one provided to [`LeaseManagerBuilder::new()`].
+    /// Use the specified Lease name instead of the one provided to [`LeaseManagerBuilder::new()`].
     pub fn with_lease_name(self, lease_name: impl Into<String>) -> Self {
         Self {
             lease_name: lease_name.into(),
@@ -286,9 +286,9 @@ impl LeaseManager {
         Ok(manager)
     }
 
-    /// Spawns Tokio task and watch on leader changes permanently.
-    /// If self state changes (became a leader or lost the lock) it sends actual lock state to the channel.
-    /// Exits if channel is closed (all receivers are gone) or in case of any sending error.
+    /// Spawns a Tokio task and watch on leader changes permanently.
+    /// If self-state changes (became a leader or lost the lock), it sends actual lock state to the channel.
+    /// Exits if the channel is closed (all receivers are gone) or in case of any sending error.
     ///
     pub async fn watch(self) -> (tokio::sync::watch::Receiver<bool>, JoinHandle<Result<LeaseManager>>) {
         let (sender, receiver) = tokio::sync::watch::channel(self.is_leader.load(Ordering::Relaxed));
@@ -302,7 +302,7 @@ impl LeaseManager {
                 select! {
                     biased;
                     _ = sender.closed() => {
-                        // Consumer closed all receivers - release lock and exit
+                        // Consumer has closed all receivers - release the lock and exit
                         debug!(identity = %self.params.identity, "control channel has been closed");
                         let result = self.release().await;
                         return match result {
@@ -319,7 +319,7 @@ impl LeaseManager {
                                     Ok(_) => backoff.reset(),
                                     Err(err) => {
                                         let _ = self.release().await;
-                                        return Err(LeaseManagerError::ControlCannelError(err));
+                                        return Err(LeaseManagerError::ControlChannelError(err));
                                     }
                                 };
                             }
@@ -349,7 +349,7 @@ impl LeaseManager {
 
     /// Try to lock lease and renew it periodically to prevent expiration.
     ///
-    /// Returns self leader lock status as soon as it was changed (acquired or released).
+    /// Returns own status of the leader lock as soon as it was changed (acquired or released).
     pub async fn changed(&self) -> Result<bool> {
         let mut backoff = BackoffSleep::new(
             MIN_CONFLICT_BACKOFF_TIME,
@@ -370,14 +370,14 @@ impl LeaseManager {
                 return Ok(is_holder);
             }
 
-            // Make single iteration, if no changes so far
+            // Make a single iteration, if no changes so far.
             match self.watcher_step().await {
                 Ok(_) => {
                     // reset backoff and continue
                     backoff.reset();
                 }
                 Err(LeaseStateError::LockConflict) => {
-                    // Wait for backoff interval and continue
+                    // Wait for a backoff interval and continue.
                     backoff.sleep().await;
                 }
                 Err(err) => return Err(LeaseManagerError::from(err)),
@@ -385,9 +385,10 @@ impl LeaseManager {
         }
     }
 
-    /// Release self-lock if it's set, or do nothing if lease is locked by other identity.
+    /// Release self-lock if it's set, or do nothing if the lease is locked by another identity.
     ///
-    /// It's useful to call this method to free locked lease gracefully before exit/shutdown if you use [`LeaseManager::changed`] directly instead of the using [`LeaseManager::watch`].
+    /// It's useful to call this method to free locked lease gracefully before exit/shutdown
+    /// if you use [`LeaseManager::changed`] directly instead of using [`LeaseManager::watch`].
     pub async fn release(&self) -> Result<()> {
         self.state
             .write()
@@ -399,7 +400,7 @@ impl LeaseManager {
 
     async fn watcher_step(&self) -> Result<(), LeaseStateError> {
         if self.is_holder().await {
-            // if we're holder of the lock - sleep up to the next refresh time,
+            // if we're the holder of the lock - sleep up to the next refresh time,
             // and renew lock (lock it softly)
             tokio::time::sleep(self.grace_sleep_duration(self.expiry().await, self.params.grace)).await;
 
@@ -420,11 +421,11 @@ impl LeaseManager {
                 .release(&self.params, LeaseLockOpts::Force)
                 .await;
 
-            // Sleep some random time (up to 500ms) to minimize collisions probability
+            // Sleep some random time (up to 1000ms) to minimize collision probability
             tokio::time::sleep(random_duration(MIN_RELEASE_WAITING_MILLIS, MAX_RELEASE_WAITING_MILLIS)).await;
             res
         } else if self.is_locked().await && !self.is_expired().await {
-            // It's locked by someone else and lock is actual.
+            // It's locked by someone else and the lock is actual.
             // Sleep up to the expiration time of the lock.
             let holder = self.holder().await.unwrap();
             debug!(identity = %self.params.identity, %holder,"lease is actually locked by other identity");
@@ -1002,7 +1003,7 @@ mod tests {
         }
         assert!(*channel.borrow());
 
-        // Close control channel and expect released lock and finished watcher
+        // Close the control channel and expect released lock and finished watcher
         drop(channel);
         let manager0 = join!(handler).0.unwrap().unwrap();
         manager0.state.write().await.sync(LeaseLockOpts::Force).await.unwrap();
@@ -1096,7 +1097,7 @@ mod tests {
             handlers.push(w.1);
         }
         // wait for at least one locked lease
-        // assert that at least one watcher get changed and only one holds lock
+        // assert that at least one watcher get changed, and only one holds lock
         sleep_secs(3).await;
         let changed_vec: Vec<_> = channels.iter_mut().map(|ch| Box::pin(ch.changed())).collect();
         let (_result, index, _) = select_all(changed_vec).await;
@@ -1138,7 +1139,7 @@ mod tests {
             }
         }
 
-        // assert expected number of the lease transitions
+        // assert the expected number of the lease transitions
         assert_eq!(
             managers[0]
                 .state

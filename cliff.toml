@@ -3,7 +3,7 @@
 
 [remote.github]
 owner = "alex-karpenko"
-repo = "kube-lease"
+repo = "kube-lease-manager"
 
 [changelog]
 # changelog header
@@ -108,7 +108,6 @@ commit_parsers = [
   { message = "^fix", group = "Fixed" },
   { message = "^.*: [Ff]ix", group = "Fixed" },
   { message = "^.*", group = "Changed" },
-  { sha = "3bc425327b8212669ccb45779db1fc8b1c792dfb", skip = true },
 ]
 # protect breaking changes from being skipped due to matching a skipping commit_parser
 protect_breaking_commits = true

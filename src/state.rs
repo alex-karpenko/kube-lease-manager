@@ -46,7 +46,7 @@ pub enum LeaseStateError {
     #[error("lock conflict detected")]
     LockConflict,
 
-    /// Try to create Lease but it already exists.
+    /// Try to create a new Lease, but it already exists.
     #[error("Lease resource `{0}` already exists")]
     LeaseAlreadyExists(String),
 
@@ -56,7 +56,7 @@ pub enum LeaseStateError {
 
     /// Internal lease state inconsistency detected.
     ///
-    /// Usually root cause is a bug.
+    /// Usually the root cause is a bug.
     #[error("inconsistent LeaseManager state detected: {0}")]
     InconsistentState(String),
 }
@@ -91,12 +91,12 @@ impl LeaseState {
         Ok(state)
     }
 
-    /// Check if current state is still valid.
+    /// Check if the current state is still valid.
     pub(crate) fn is_expired(&self) -> bool {
         SystemTime::now() > self.expiry
     }
 
-    /// Check if current holder is the same as `other` parameter.
+    /// Check if the current holder is the same as `other` parameter.
     pub(crate) fn is_holder(&self, other: &str) -> bool {
         if let Some(holder) = &self.holder {
             holder == other
@@ -105,18 +105,18 @@ impl LeaseState {
         }
     }
 
-    /// Check if current holder is set to something.
+    /// Check if the current holder is set to something.
     pub(crate) fn is_locked(&self) -> bool {
         self.holder.is_some()
     }
 
-    /// Retrieve actual state from the cluster.
+    /// Retrieve the actual state from the cluster.
     pub(crate) async fn sync(&mut self, opts: LeaseLockOpts) -> Result<(), LeaseStateError> {
         if opts == LeaseLockOpts::Force || self.is_expired() {
             debug!(?opts, lease = %self.lease_name, "sync lease state");
             let result = self.get().await;
 
-            // If Lease doesn't exist - clear state before exiting
+            // If the Lease doesn't exist - clear state before exiting
             if let Err(LeaseStateError::NonexistentLease(_)) = &result {
                 debug!(lease = %self.lease_name, "erasing state because lease doesn't exists");
                 self.holder = None;
@@ -164,9 +164,9 @@ impl LeaseState {
         let lease_duration_seconds = params.duration;
         let now: DateTime<Utc> = SystemTime::now().into();
 
-        // if we're holder - just refresh lease
+        // if we're the holder - refresh the lease
         let patch = if self.is_holder(&params.identity) {
-            // if we're holder - just refresh lease
+            // if we're the holder - refresh the lease
             trace!("update our own lease");
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
@@ -178,7 +178,7 @@ impl LeaseState {
             });
             Patch::Strategic(patch)
         } else if !self.is_locked() {
-            // if lock is orphan - try to lock it softly
+            // if the lock is orphaned - try to lock it softly
             trace!("try to lock orphaned lease");
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
@@ -318,7 +318,7 @@ impl LeaseState {
                 }
             }
             LeaseCreateMode::UseExistent => {
-                // Get it and fail if doesn't exist
+                // Get it and fail if it doesn't exist
                 result
             }
             #[cfg(test)]
@@ -662,7 +662,7 @@ mod tests {
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
         states[1].sync(LeaseLockOpts::Force).await.unwrap();
 
-        // if lock is orphan - try to lock it softly
+        // if the lock is orphaned - try to lock it softly
         let now: DateTime<Utc> = SystemTime::now().into();
         let patch = serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
