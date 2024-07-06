@@ -1,5 +1,44 @@
 #![deny(unsafe_code)]
-
+//! Ergonomic and durable leader election using Kubernetes Lease API.
+//!
+//! `kube-lease-manager` is a high-level helper to facilitate leader election using
+//! [Lease Kubernetes resource](https://kubernetes.io/docs/reference/kubernetes-api/cluster-resources/lease-v1/).
+//! It ensures that only a single instance of the lease managers holds the lock at any moment of time.
+//!
+//! Some of the typical use cases:
+//! * automatic coordination of leader election between several instances (Pods) of Kubernetes controllers;
+//! * ensure only a single instance of concurrent jobs is running right now;
+//! * exclusive acquiring of shared resource.
+//!
+//! ## Features
+//!
+//! * Provides two different high-level approaches to lock and release lease:
+//!   fully automated or partially manual lock control.
+//! * Uses [Server-Side-Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
+//!   approach to update lease state that facilitates conflict detection and resolution
+//!   and makes impossible concurrent locking.
+//! * Tolerate configurable time skew between nodes of the Kubernetes cluster.
+//! * Behavioral parameters of the lease manager are easily and flexibly configurable.
+//! * Uses well-known and highly appreciated [kube](https://crates.io/crates/kube)
+//!   and [Tokio](https://crates.io/crates/tokio)
+//!   crates to access Kubernetes API and coordinate asynchronous tasks execution.
+//! * You don't need to work with low-level Kubernetes API.
+//!
+//! As mentioned above, `kube-lease-manager` provides two possible ways to manage lease lock:
+//! 1. _Fully automated_: you create `LeaseManager` instance and run its `watch()` method.
+//!    It returns [Tokio watch channel](https://docs.rs/tokio/1.38.0/tokio/sync/watch/index.html) to watch on state changes
+//!    Besides that it runs an unattended background task
+//!    which permanently tries to lock lease if it's free and publish changed state to the channel.
+//!    The task finishes if the channel is closed.
+//! 2. _Partially manual_: you create `LeaseManager`
+//!    instance and use its `changed()` and `release()` methods to control lock.
+//!    `Changed()` tries to lock lease as soon as it becomes free and returns actual lock state when it's changed.
+//!    Your responsibilities are:
+//!    - to keep `changed()` running (it's a `Future`) to ensure lock is refreshing while it's in use;
+//!    - to call `release()` when you don't need the lock and want to make it free for others.
+//!
+//! First way ensures that lease is locked (has a holder) at any moment of time.
+//! Second makes possible to acquire and release lock when you need it.
 mod backoff;
 mod state;
 
