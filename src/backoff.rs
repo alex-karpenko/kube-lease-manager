@@ -1,6 +1,6 @@
 use rand::{thread_rng, Rng};
 use std::time::Duration;
-use tracing::debug;
+use tracing::trace;
 
 pub(crate) type DurationFloat = f64;
 
@@ -13,6 +13,18 @@ pub(crate) struct BackoffSleep {
 
 impl BackoffSleep {
     pub(crate) fn new(min: DurationFloat, max: DurationFloat, mult: DurationFloat) -> Self {
+        if mult <= 1.0 {
+            panic!("`mult` should be greater than 1.0 to make backoff interval increasing")
+        }
+
+        if min >= max {
+            panic!("`max` should be greater than `min` to make backoff interval increasing")
+        }
+
+        if min <= 0.0 || max <= 0.0 {
+            panic!("`min` and `max` should be greater than zero")
+        }
+
         Self {
             min,
             max,
@@ -22,15 +34,19 @@ impl BackoffSleep {
     }
 
     pub(crate) fn reset(&mut self) {
+        trace!("reset backoff state");
         self.last = self.min;
     }
 
     pub(crate) async fn sleep(&mut self) {
-        tokio::time::sleep(self.next()).await;
+        let duration = self.next();
+        trace!(?duration, "backoff sleep");
+        tokio::time::sleep(duration).await;
     }
 
     fn next(&mut self) -> Duration {
         self.last = self.random();
+        trace!(duration = ?self.last, "next random duration requested");
         Duration::from_secs_f64(self.last)
     }
 
@@ -45,7 +61,7 @@ impl BackoffSleep {
         };
 
         let val = thread_rng().gen_range(min..max);
-        debug!(
+        trace!(
             min = format!("{min:.3}"),
             val = format!("{val:.3}"),
             max = format!("{max:.3}"),
@@ -91,5 +107,30 @@ mod tests {
             assert!(d <= Duration::from_secs_f64(MAX));
             assert!(d >= Duration::from_secs_f64(MAX / MULT));
         }
+    }
+
+    #[test]
+    #[should_panic = "`mult` should be greater than 1.0 to make backoff interval increasing"]
+    fn incorrect_backoff_mult_equal_to_one() {
+        let _ = BackoffSleep::new(1.0, 2.0, 1.0);
+    }
+
+    #[test]
+    #[should_panic = "`mult` should be greater than 1.0 to make backoff interval increasing"]
+    fn incorrect_backoff_mult_less_than_one() {
+        let _ = BackoffSleep::new(1.0, 2.0, 0.999);
+    }
+
+    #[test]
+    #[should_panic = "`max` should be greater than `min` to make backoff interval increasing"]
+    fn incorrect_backoff_min_greater_than_max() {
+        let _ = BackoffSleep::new(3.0, 2.0, 2.0);
+    }
+
+    #[test]
+    #[should_panic = "`min` and `max` should be greater than zero"]
+    fn incorrect_backoff_min_or_max_less_then_zero() {
+        let _ = BackoffSleep::new(0.0, 2.0, 2.0);
+        let _ = BackoffSleep::new(0.0, 0.0, 2.0);
     }
 }

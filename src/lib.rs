@@ -13,7 +13,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::{select, sync::RwLock, task::JoinHandle};
-use tracing::{debug, error};
+use tracing::{debug, error, trace};
 
 type DurationMillis = u64;
 
@@ -276,11 +276,14 @@ impl LeaseManager {
         params: LeaseParams,
         create_mode: LeaseCreateMode,
     ) -> Result<Self> {
-        Ok(Self {
+        let manager = Self {
             params,
             state: RwLock::new(LeaseState::new(client, lease_name, namespace, create_mode).await?),
             is_leader: AtomicBool::new(false),
-        })
+        };
+
+        trace!(manager = ?manager, "constructed new LeaseManager");
+        Ok(manager)
     }
 
     /// Spawns Tokio task and watch on leader changes permanently.
@@ -290,7 +293,7 @@ impl LeaseManager {
     pub async fn watch(self) -> (tokio::sync::watch::Receiver<bool>, JoinHandle<Result<LeaseManager>>) {
         let (sender, receiver) = tokio::sync::watch::channel(self.is_leader.load(Ordering::Relaxed));
         let watcher = async move {
-            debug!("starting watch loop");
+            debug!(params = ?self.params, "starting watch loop");
 
             let mut backoff =
                 BackoffSleep::new(MIN_WATCHER_BACKOFF_TIME, MAX_WATCHER_BACKOFF_TIME, WATCHER_BACKOFF_MULT);
@@ -300,7 +303,7 @@ impl LeaseManager {
                     biased;
                     _ = sender.closed() => {
                         // Consumer closed all receivers - release lock and exit
-                        debug!("control channel has been closed");
+                        debug!(identity = %self.params.identity, "control channel has been closed");
                         let result = self.release().await;
                         return match result {
                             Ok(_) => Ok(self),
@@ -308,6 +311,7 @@ impl LeaseManager {
                         };
                     }
                     result = self.changed() => {
+                        debug!(identity = %self.params.identity, "lease state has been changed");
                         match result {
                             Ok(state) => {
                                 let result = sender.send(state);
@@ -403,7 +407,7 @@ impl LeaseManager {
             self.state.write().await.lock(&self.params, LeaseLockOpts::Soft).await
         } else if !self.is_locked().await {
             // Lease isn't locket yet
-            debug!(identity = %self.params.identity, "try to lock lease");
+            debug!(identity = %self.params.identity, "try to lock orphaned lease");
             self.state.write().await.lock(&self.params, LeaseLockOpts::Soft).await
         } else if self.is_locked().await && self.is_expired().await {
             // It's locked by someone else but lock is already expired.
@@ -428,7 +432,7 @@ impl LeaseManager {
             Ok(())
         } else {
             // Something wrong happened
-            error!(?self, "unreachable branch, looks like a BUG!");
+            error!(?self, "unreachable branch in LeaseManager watcher, looks like a BUG!");
             Err(LeaseStateError::InconsistentState(
                 "unreachable branch, looks like a BUG!".into(),
             ))

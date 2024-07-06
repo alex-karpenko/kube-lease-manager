@@ -14,7 +14,7 @@ use std::{
     fmt::Debug,
     time::{Duration, SystemTime},
 };
-use tracing::debug;
+use tracing::{debug, trace};
 
 /// Represents actual Lease state.
 #[derive(Debug)]
@@ -113,10 +113,12 @@ impl LeaseState {
     /// Retrieve actual state from the cluster.
     pub(crate) async fn sync(&mut self, opts: LeaseLockOpts) -> Result<(), LeaseStateError> {
         if opts == LeaseLockOpts::Force || self.is_expired() {
+            debug!(?opts, lease = %self.lease_name, "sync lease state");
             let result = self.get().await;
 
             // If Lease doesn't exist - clear state before exiting
             if let Err(LeaseStateError::NonexistentLease(_)) = &result {
+                debug!(lease = %self.lease_name, "erasing state because lease doesn't exists");
                 self.holder = None;
                 self.transitions = 0;
                 self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
@@ -146,6 +148,7 @@ impl LeaseState {
                 };
             } else {
                 // Empty spec in the Lease
+                debug!(lease = %self.lease_name, "lease `spec` field is empty");
                 self.holder = None;
                 self.transitions = 0;
                 self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
@@ -164,6 +167,7 @@ impl LeaseState {
         // if we're holder - just refresh lease
         let patch = if self.is_holder(&params.identity) {
             // if we're holder - just refresh lease
+            trace!("update our own lease");
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
@@ -175,6 +179,7 @@ impl LeaseState {
             Patch::Strategic(patch)
         } else if !self.is_locked() {
             // if lock is orphan - try to lock it softly
+            trace!("try to lock orphaned lease");
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
@@ -188,6 +193,7 @@ impl LeaseState {
             let patch = Patch::Apply(patch);
             self.patch(params, &patch).await?;
 
+            trace!("locked successfully, increase transitions counter");
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
@@ -198,6 +204,7 @@ impl LeaseState {
             Patch::Strategic(patch)
         } else if opts == LeaseLockOpts::Force {
             // if it's locked by someone else but force is requested - try to lock it with force
+            trace!("try to force re-lock locked lease");
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
@@ -227,9 +234,6 @@ impl LeaseState {
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
-                // "metadata": {
-                //     "managedFields": [{}]
-                // },
                 "spec": {
                     "acquireTime": Option::<()>::None,
                     "renewTime": Option::<()>::None,
@@ -249,7 +253,7 @@ impl LeaseState {
     where
         P: Serialize + Debug,
     {
-        debug!(?patch);
+        debug!(?patch, "patch lease");
 
         let params = PatchParams {
             field_manager: Some(params.field_manager()),
@@ -260,7 +264,7 @@ impl LeaseState {
         match self.api.patch(&self.lease_name, &params, patch).await {
             Ok(_) => Ok(()),
             Err(kube::Error::Api(err)) if err.reason == "Conflict" && err.code == 409 => {
-                debug!(error = ?err, "patch conflict detected");
+                debug!(error = ?err, "conflict detected while patching");
                 Err(LeaseStateError::LockConflict)
             }
             Err(err) => Err(LeaseStateError::KubeError(err)),
@@ -291,6 +295,7 @@ impl LeaseState {
             spec: Default::default(),
         };
 
+        debug!(?mode, "create lease");
         match mode {
             LeaseCreateMode::AutoCreate => {
                 // Get it and return ok if it exists,
