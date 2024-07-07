@@ -344,7 +344,69 @@ impl From<LeaseStateError> for LeaseManagerError {
 ///
 /// ### Example
 ///
+/// This artificial example tries to run some workload as soon as it gets lease lock,
+/// and cancels workload if lock was lost.
+/// Something similar is used in Kubernetes controllers that have several Pods running (to ensure high availability),
+/// but only one of them is eligible to make changes to the actual state.
+///
 /// ```no_run
+/// use kube::Client;
+/// use kube_lease_manager::{LeaseManagerBuilder, Result};
+/// use std::time::Duration;
+/// use tokio::task::JoinHandle;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///    // Use default Kube client
+///    let client = Client::try_default().await?;
+///
+///    // Create the simplest LeaseManager with reasonable defaults using convenient builder.
+///    // With default auto-create mode Lease will be created if it doesn't exist,
+///    // or existing one will be used otherwise.
+///    // The default lease duration is 30 seconds with grace period 5 seconds.
+///    let manager = LeaseManagerBuilder::new(client, "test-lease-name")
+///        .with_duration(5)
+///        .with_grace(2)
+///        .build()
+///        .await?;
+///
+///    // Start manager in watching mode and get back status channel and task handler.
+///    let (mut channel, _task) = manager.watch().await;
+///
+///    // Watch on the channel for lock state changes.
+///
+///    let mut my_work_task: Option<JoinHandle<()>> = None;
+///
+///    // Try to keep out task running as long as possible.
+///    // Restart it when lock is ours.
+///    loop {
+///        // Wait for the change of the lock
+///        let _ = channel.changed();
+///        // And grab the state
+///        let lock_state = *channel.borrow_and_update();
+///
+///        if lock_state {
+///            // Do something useful as a leader
+///            println!("Got luck! Run our exclusive work...");
+///            my_work_task = Some(tokio::spawn(Box::pin(do_work())));
+///        } else {
+///            println!("Lost the lease lock! Lets wait for the next one...");
+///            // Abort running task (or use something more sophisticated to gracefully stop it)
+///            if let Some(task) = &my_work_task {
+///                task.abort();
+///            }
+///            my_work_task = None;
+///        }
+///    }
+///
+///    // Explicitly close the control channel. But actually this is unreachable part die to endless loop above.
+///    // drop(channel);
+///    // let _manager = tokio::join!(task).0.unwrap()?;
+/// }
+///
+/// async fn do_work() {
+///     futures::pending!();
+/// }
 /// ```
 ///
 /// ## Partially manual approach
@@ -368,7 +430,54 @@ impl From<LeaseStateError> for LeaseManagerError {
 ///
 /// ### Example
 ///
+/// This example shows how to start actual work only after acquiring  the lease lock and release lock after finish.
+///
 /// ```no_run
+/// use kube::Client;
+/// use kube_lease_manager::{LeaseManagerBuilder, Result};
+/// use std::time::Duration;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     // Use default Kube client
+///     let client = Client::try_default().await?;
+///     // Create the simplest LeaseManager with reasonable defaults using convenient builder.
+///     // It uses Lease resource called `test-watch-lease`.
+///     let manager = LeaseManagerBuilder::new(client, "test-manual-lease").build().await?;
+///
+///     // Try to get a lock on resource
+///     let state = manager.changed().await?;
+///     assert!(state);
+///
+///     // Lets run two branches:
+///     // - first one watches on state to ensure we don't work with lost lease and refreshes lock
+///     // - second one does actual work
+///     tokio::select! {
+///         // Ensure `changed()` is running to refresh lease lock
+///         lock_state = manager.changed() => {
+///             if let Ok(state) = lock_state {
+///                 println!("Looks like lock state was changed to {state} before we finished.");
+///                 assert!(!state);
+///             } else {
+///                 println!("Something wrong happened: {lock_state:?}.")
+///             }
+///         }
+///         // Do everything you need with locked resource
+///         _ = async {
+///             println!("We got a lease lock! Lets do out heady work...");
+///             // Do something useful here
+///             tokio::time::sleep(Duration::from_secs(1)).await
+///         } => {
+///             println!("We've done our heavy work.");
+///             // Release lock after finish
+///             manager.release().await?;
+///             // And ensure state was changed
+///             assert!(!manager.changed().await?);
+///         }
+///     }
+///
+///     Ok(())
+/// }
 /// ```
 #[derive(Debug)]
 pub struct LeaseManager {
