@@ -82,7 +82,7 @@ async fn main() {
    tokio::select! {
         _ = channel.changed() => {
             let lock_state = *channel.borrow_and_update();
-            
+
             if lock_state {
                 // Do something useful as a leader
                 println!("Got a luck!");
@@ -113,4 +113,3 @@ So it was a reason to create this one.
 ## License
 
 This project is licensed under the [MIT license](LICENSE).
-
