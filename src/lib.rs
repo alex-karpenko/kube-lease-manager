@@ -1,4 +1,146 @@
 #![deny(unsafe_code)]
+//! Ergonomic and durable leader election using Kubernetes Lease API.
+//!
+//! `kube-lease-manager` is a high-level helper to facilitate leader election using
+//! [Lease Kubernetes resource](https://kubernetes.io/docs/reference/kubernetes-api/cluster-resources/lease-v1/).
+//! It ensures that only a single instance of the lease managers holds the lock at any moment of time.
+//!
+//! Some of the typical use cases:
+//! * automatic coordination of leader election between several instances (Pods) of Kubernetes controllers;
+//! * ensure only a single instance of concurrent jobs is running right now;
+//! * exclusive acquiring of shared resource.
+//!
+//! ## Features
+//!
+//! * [`LeaseManager`] is a central part of the crate.
+//!   This is a convenient wrapper around a Kubernetes `Lease` resource to manage all aspects of leader election process.
+//! * Provides two different high-level approaches to lock and release lease:
+//!   fully automated or partially manual lock control.
+//! * Uses [Server-Side-Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
+//!   approach to update lease state that facilitates conflict detection and resolution
+//!   and makes impossible concurrent locking.
+//! * Tolerate configurable time skew between nodes of the Kubernetes cluster.
+//! * Behavioral parameters of the lease manager are easily and flexibly configurable.
+//! * Uses well-known and highly appreciated [kube](https://crates.io/crates/kube)
+//!   and [Tokio](https://crates.io/crates/tokio)
+//!   crates to access Kubernetes API and coordinate asynchronous tasks execution.
+//! * You don't need to use low-level Kubernetes API.
+//! * Uses Tokio [`tracing`](https://crates.io/crates/tracing) carte to provide event logs.
+//!
+//! ---
+//!
+//! As mentioned above, `kube-lease-manager` provides two possible ways to manage lease lock:
+//! 1. _Fully automated_: you create [`LeaseManager`] instance and run its [`watch()`](LeaseManager::watch()) method.
+//!    It returns [Tokio watch channel](https://docs.rs/tokio/latest/tokio/sync/watch/index.html) to watch on state changes
+//!    Besides that it runs an unattended background task
+//!    which permanently tries to lock lease if it's free and publish changed state to the channel.
+//!    The task finishes if the channel is closed.
+//! 2. _Partially manual_: you create [`LeaseManager`]
+//!    instance and use its [`changed()`](LeaseManager::changed())
+//!    and [`release()`](LeaseManager::release()) methods to control lock.
+//!    `changed()` tries to lock lease as soon as it becomes free and returns actual lock state when it's changed.
+//!    Your responsibilities are:
+//!    - to keep `changed()` running (it's a `Future`) to ensure lock is refreshing while it's in use;
+//!    - to call `release()` when you don't need the lock and want to make it free for others.
+//!
+//! First way ensures that lease is locked (has a holder) at any moment of time.
+//! Second makes possible to acquire and release lock when you need it.
+//!
+//! ## LeaseManager config
+//!
+//! The main config of the [`LeaseManager`] is a [`LeaseParams`] structure, which
+//! describes several parameters that affect managers' behavior.
+//! Those parameters are:
+//! * _identity_: unique string identifier of the lease manager among all other instances.
+//!   Usually this is some randomly generated string (UUID, for example).
+//!   `LeaseParams` can provide default value by generating random 32-symbol alphanumeric string,
+//!   or you can explicitly specify identity string while creating `LeaseParams`
+//!   or directly via [`LeaseManagerBuilder`].
+//! * _duration_: this is a maximum duration (in seconds) of lock validity after last renewal (confirmation) of the lock.
+//!   In other words, the current lock holder is obliged to renew (re-confirm) its lock during this time after last renewal.
+//!   If the holder didn't re-confirm lock, any other `LeaseManager` instance is permitted to grab the lock.
+//!   The default value provided by `LeaseParams` is 30 seconds and may be configured.
+//! * _grace_: to avoid flapping losses of lock, the actual leaseholder tries to re-confirm (renew) lock earlier,
+//!   before it expires (before the end of the `duration` interval).
+//!   This parameter defines an interval (in seconds) before lock expiration when the lock holder has to renew its lock.
+//!   As a side effect,
+//!   this interval can be considered as a maximum allowed time synchronization skew between nodes in the Kubernetes cluster
+//!   to avoid overlying locking.
+//!   The default value provided by `LeaseParams` is 5 seconds and may be configured.
+//! * _field_manager_:
+//!   identifier of the Kubernetes [field manager](https://kubernetes.io/docs/reference/using-api/server-side-apply/#managers)
+//!   to authorize changes of the Lease resources.
+//!   It should be unique among other managers.
+//!   Usually you don't need to specify it explicitly because of LeaseParams generates it concatenating crates'
+//!   name (kube-lease-manager) and `identity` string.
+//!   But it's possible to specify field manger directly via `LeaseParams`
+//!   [with_field_manager()](LeaseParams::with_field_manager) method or using [`LeaseManagerBuilder`].
+//!
+//! The next config option is a [`LeaseCreateMode`]
+//! which defines the behavior how LeaseManager manages Lease Kubernetes resource during startup.
+//! The default behavior is [`AutoCreate`](LeaseCreateMode::AutoCreate):
+//! create resource if it doesn't exist or use existing one if it's already present.
+//!
+//! The last significant parameter of the [`LeaseManager`] is a Lease resource name.
+//! Obviously, it has no defaults and should be specified explicitly via LeaseManager [`new()`](LeaseManager::new)
+//! constructor of using [`LeaseManagerBuilder`].
+//!
+//! ## Examples
+//!
+//! Create [`LeaseManager`] with reasonable defaults using convenient ['LeaseManagerBuilder'] and use ["watch"](LeaseManager::watch)
+//! approach to get notified about lock holder changes.
+//!
+//! ```no_run
+//! use kube::Client;
+//! use kube_lease_manager::{LeaseManagerBuilder, Result};
+//! use std::time::Duration;
+//!
+//! #[tokio::main]
+//! async fn main() -> Result<()> {
+//!    // Use default Kube client
+//!    let client = Client::try_default().await?;
+//!
+//!    // Create the simplest LeaseManager with reasonable defaults using convenient builder.
+//!    // It uses Lease resource called `test-lease-name`.
+//!    // With default auto-create mode Lease will be created if it doesn't exist,
+//!    // or existing one will be used otherwise.
+//!    // The default lease duration is 30 seconds with grace period 5 seconds.
+//!    let manager = LeaseManagerBuilder::new(client, "test-lease-name")
+//!            .build()
+//!            .await?;
+//!
+//!    // Start manager in watching mode and get back status channel and task handler.
+//!    let (mut channel, task) = manager.watch().await;
+//!
+//!    // Watch on the channel for lock state changes.
+//!    tokio::select! {
+//!         _ = channel.changed() => {
+//!             let lock_state = *channel.borrow_and_update();
+//!
+//!             if lock_state {
+//!                 // Do something useful as a leader
+//!                 println!("Got a luck!");
+//!             }
+//!         }
+//!         _ = tokio::time::sleep(Duration::from_secs(10)) => {
+//!             println!("Unable get lock during 10s");
+//!         }
+//!     }
+//!
+//!    // Explicitly close the control channel
+//!    drop(channel);
+//!
+//!    // Wait for the finish of the manager and get it back
+//!    let _manager = tokio::join!(task).0.unwrap()?;
+//!
+//!     Ok(())
+//! }
+//! ```
+//!
+//! More examples with detailed explanations can be found in the corresponding documentation chapters about [`LeaseManager`],
+//! [`LeaseManagerBuilder`], [`LeaseParams`] and [`LeaseCreateMode`],
+//! as well as an explanation of the specific errors provided by [`LeaseManagerError`].
+//!
 
 mod backoff;
 mod state;
@@ -17,15 +159,18 @@ use tracing::{debug, error, trace};
 
 type DurationMillis = u64;
 
-/// Since all Durations related to Lease resource are in seconds, this alias is useful.
+/// Since all durations related to Lease resource are in seconds, this alias is useful.
 pub type DurationSeconds = u64;
-/// Convenient alias for `Result`.
+/// Convenient alias for `Result`. Uses [`LeaseManagerError`] as an Error type.
 pub type Result<T, E = LeaseManagerError> = std::result::Result<T, E>;
 
+/// Default value of the `duration` parameter.
 pub const DEFAULT_LEASE_DURATION_SECONDS: DurationSeconds = 30;
+/// Default value of the `grace` parameter.
 pub const DEFAULT_LEASE_GRACE_SECONDS: DurationSeconds = 5;
 
-const DEFAULT_RANDOM_IDENTITY_LEN: usize = 32;
+/// Length of the random identity string generated by [`default`](LeaseParams::default) [`LeaseParams`] constructor.
+pub const DEFAULT_RANDOM_IDENTITY_LEN: usize = 32;
 const DEFAULT_FIELD_MANAGER_PREFIX: &str = env!("CARGO_PKG_NAME");
 
 const MIN_RELEASE_WAITING_MILLIS: DurationMillis = 100;
@@ -39,7 +184,7 @@ const MIN_WATCHER_BACKOFF_TIME: DurationFloat = 1.0;
 const MAX_WATCHER_BACKOFF_TIME: DurationFloat = 30.0;
 const WATCHER_BACKOFF_MULT: DurationFloat = 2.0;
 
-/// Represents `kube-lease` specific errors.
+/// Represents `kube-lease-manager` specific errors.
 #[derive(thiserror::Error, Debug)]
 pub enum LeaseManagerError {
     /// Error originated from the Kubernetes.
@@ -50,21 +195,21 @@ pub enum LeaseManagerError {
         kube::Error,
     ),
 
-    /// Internal lease state inconsistency detected.
+    /// Internal state inconsistency detected.
     ///
-    /// Usually a root cause is a bug.
+    /// Usually the root cause is a bug.
     #[error("inconsistent LeaseManager state detected: {0}")]
     InconsistentState(String),
 
-    /// Try to create a new Lease, but it already exists.
+    /// Try to create a new `Lease` resource, but it already exists.
     #[error("Lease resource `{0}` already exists")]
     LeaseAlreadyExists(String),
 
-    /// Try to use non-existent Lease resource.
+    /// Try to use non-existent `Lease` resource.
     #[error("Lease resource `{0}` doesn't exist")]
     NonexistentLease(String),
 
-    /// LeaseManager unable to send state to the control channel
+    /// `LeaseManager` unable to send state to the control channel.
     #[error("Control channel error: {0}")]
     ControlChannelError(
         #[source]
@@ -73,7 +218,37 @@ pub enum LeaseManagerError {
     ),
 }
 
-/// Parameters of LeaseManager.
+/// Parameters of [`LeaseManager`].
+///
+/// The structure describes several parameters that affect [`LeaseManager`] behavior:
+/// * _identity_: unique string identifier of the lease manager among all other instances.
+///   Usually this is some randomly generated string (UUID, for example).
+///   `LeaseParams` can provide default value by generating random 32-symbol alphanumeric string,
+///   or you can explicitly specify identity string while creating `LeaseParams` with [`new()`](LeaseParams::new)
+///   constructor or via [`LeaseManagerBuilder`].
+/// * _duration_: this is a maximum duration (in seconds) of lock validity after last renewal (confirmation) of the lock.
+///   In other words, the current lock holder is obliged to renew (re-confirm) its lock during this time after last renewal.
+///   If the holder didn't re-confirm lock, any other `LeaseManager` instance is permitted to grab the lock.
+///   The default value provided by `LeaseParams` is 30 seconds and may be configured.
+/// * _grace_: to avoid flapping losses of lock, the actual leaseholder tries to re-confirm (renew) lock earlier,
+///   before it expires (before the end of the `duration` interval).
+///   This parameter defines an interval (in seconds) before lock expiration when the lock holder has to renew its lock.
+///   As a side effect,
+///   this interval can be considered as a maximum allowed time synchronization skew between nodes in the Kubernetes cluster
+///   to avoid overlying locking.
+///   The default value provided by `LeaseParams` is 5 seconds and may be configured.
+/// * _field_manager_:
+///   identifier of the Kubernetes [field manager](https://kubernetes.io/docs/reference/using-api/server-side-apply/#managers)
+///   to authorize changes of the Lease resources.
+///   It should be unique among other managers.
+///   Usually you don't need to specify it explicitly because of LeaseParams generates it concatenating crates'
+///   name (kube-lease-manager) and `identity` string.
+///   But it's possible to specify field manger directly via `LeaseParams`
+///   [with_field_manager()](LeaseParams::with_field_manager) method or using [`LeaseManagerBuilder`].
+///
+/// `LeaseParams` may be created using [`default()`](LeaseParams::default)
+/// constructor, [`new()`](LeaseParams::new) constructor,
+/// or you can specify any non-default parameter value by creating `LeaseManager` using [`LeaseManagerBuilder`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct LeaseParams {
     /// Lease holder identity.
@@ -86,12 +261,29 @@ pub struct LeaseParams {
     field_manager: String,
 }
 
-/// Lease resource creation mode.
+/// Lease Kubernetes resource creation mode.
+///
+/// To coordinate leader election,
+/// [`LeaseManager`] uses [`Lease`](https://kubernetes.io/docs/reference/kubernetes-api/cluster-resources/lease-v1/)
+/// Kubernetes resource.
+/// You specify `Lease` resource name during creation of the `LeaseManager` instance.
+/// So to use that object, it should exist.
+///
+/// `LeaseCreateMode` describes is `Lease` resource should be created and how,
+/// or it should exist before `LeaseManager` constructing.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub enum LeaseCreateMode {
+    /// If a specified Lease object is already present in the Kubernetes cluster, then use it.
+    /// Otherwise, try to create a new object and use it.
+    /// This is a default behavior.
     #[default]
     AutoCreate,
+    /// Use only a newly created Lease object.
+    /// If it's already present in the cluster,
+    /// LeaseManager constructor fails with [`LeaseAlreadyExists`](LeaseManagerError::LeaseAlreadyExists) error.
     CreateNew,
+    /// Lease object should be existent before call of the `LeaseManager` constructor.
+    /// If it doesn't exist, construct fails with [`NonexistentLease`](LeaseManagerError::NonexistentLease) error.
     UseExistent,
     #[cfg(test)]
     Ignore,
@@ -109,7 +301,75 @@ impl From<LeaseStateError> for LeaseManagerError {
     }
 }
 
-/// Lease lock manager.
+/// Wrapper around a Kubernetes Lease resource to manage all aspects of leader election process.
+///
+/// There are two possible ways to manage lease lock:
+/// fully automated using managers' [`watch()`](LeaseManager::watch)
+/// method and partially manual using [`changed()`](LeaseManager::changed)
+/// and [`release()`](LeaseManager::release) methods.
+///
+/// ## Fully automated way
+///
+/// You create [`LeaseManager`] instance and run its [`watch()`](LeaseManager::watch()) method.
+/// It consumes manager instance (to prevent using other methods)
+/// and returns [Tokio watch channel](https://docs.rs/tokio/latest/tokio/sync/watch/index.html)
+/// to watch on state changes,
+/// and Tokio [`task handler`](https://docs.rs/tokio/latest/tokio/task/struct.JoinHandle.html).
+///
+/// It runs a detached background [`Tokio task`](https://docs.rs/tokio/latest/tokio/task/fn.spawn.html)
+/// which permanently tries to lock lease if it's free and publish changed state to the channel.
+/// The task finishes if the channel is closed or in case of channel error.
+/// So this approach ensures that `Lease` is locked by some manager at any moment of time.
+///
+/// `Lease` lock state is a `bool` value,
+/// wrapped into the [`Receiver`](https://docs.rs/tokio/latest/tokio/sync/watch/struct.Receiver.html) structure,
+/// it's `true` if the manager got the lease lock, and `false` if it lost the lease.
+/// Refer to the [`tokio::sync::watch`](https://docs.rs/tokio/latest/tokio/sync/watch/index.html)
+/// documentation for details about using it.
+/// But the most convenient way is to use receivers'
+/// [`changed()`](https://docs.rs/tokio/latest/tokio/sync/watch/struct.Receiver.html#method.changed)
+/// method to get notified when channels' value was changed,
+/// and follow it by the [`borrow_and_update()`](https://docs.rs/tokio/latest/tokio/sync/watch/struct.Receiver.html#method.borrow_and_update)
+/// method call to read the actual state value.
+///
+/// When the channel is closed (if all receivers went out of their scopes and deleted, or by explicit `drop()` call),
+/// watching task finishes,
+/// and you can (preferably you should) call [`tokio::join`](https://docs.rs/tokio/latest/tokio/macro.join.html)
+/// to get its result.
+/// It returns the previously consumed `LeaseManager` instance,
+/// so you can use it next time, but the new status channel and the new watching task will be created.
+///
+/// `watch()` tolerates (hides) all errors except watch channel related ones.
+/// In case of error, it tries to recover state repeating calls to Kubernetes API with an increasing backoff interval.
+///
+/// ### Example
+///
+/// ```no_run
+/// ```
+///
+/// ## Partially manual approach
+///
+/// The same, you create [`LeaseManager`] instance but use its [`changed()`](LeaseManager::changed())
+/// and [`release()`](LeaseManager::release()) methods to control lock.
+/// `changed()` tries to lock lease as soon as it becomes free and returns actual lock state when it's changed.
+/// It finishes and returns changed state each time the managers' lock state changes.
+/// It stays running until the state of this particular manager is the same as before.
+///
+/// At the same time, if the manager holds lock then `changed()` method keeps it held by permanently refreshing lease lock.
+/// So to avoid loss of the lock, you're responsible to keep `changed()` running (it's a `Future`)
+/// to ensure refreshing of the lock,
+/// and to ensure this particular manager is a holder of the lease until you need it locked.
+///
+/// When you don't need the lease lock anymore, you have to call `release()`
+/// method and make lock free to be acquired by any other manager.
+///
+/// In contrast to the previous approach, `changed()` method returns any errors related to interacting with Kubernetes API.
+/// So it's up to you how to respond to errors.
+///
+/// ### Example
+///
+/// ```no_run
+/// ```
 #[derive(Debug)]
 pub struct LeaseManager {
     /// Parameters of the desired lock.
@@ -121,7 +381,12 @@ pub struct LeaseManager {
 }
 
 impl LeaseParams {
-    /// Lease lock parameters constructor.
+    /// Constructs instances of `LeaseParams`.
+    ///
+    /// Parameters should satisfy all conditions below, otherwise method panics:
+    /// * duration > 0;
+    /// * grace > 0;
+    /// * grace < duration.
     pub fn new(identity: impl Into<String>, duration: DurationSeconds, grace: DurationSeconds) -> Self {
         let duration: DurationSeconds = duration;
         let grace: DurationSeconds = grace;
@@ -142,11 +407,20 @@ impl LeaseParams {
         }
     }
 
-    /// Use the specified field manager value instead of the default one.
-    pub fn with_field_manager(self, field_manager: String) -> Self {
-        Self { field_manager, ..self }
+    /// Set the specified field manager value instead of the default one.
+    ///
+    /// Default is `identity` string prefixed by `kube-lease-manager-`, and usually you don't need to change it, by can.
+    ///
+    /// It has to be unique among other field managers withing the scope of the `Lease` resource.
+    /// So if you change it, your responsibility is to ensure its uniqueness.
+    pub fn with_field_manager(self, field_manager: impl Into<String>) -> Self {
+        Self {
+            field_manager: field_manager.into(),
+            ..self
+        }
     }
 
+    /// Return current filed_manager value to use in [`patch()`](LeaseState::patch).
     fn field_manager(&self) -> String {
         self.field_manager.clone()
     }
@@ -154,7 +428,7 @@ impl LeaseParams {
 
 impl Default for LeaseParams {
     /// Creates parameters instance with reasonable defaults:
-    ///   - random alphanumeric identity string;
+    ///   - random alphanumeric identity string of [`DEFAULT_RANDOM_IDENTITY_LEN`] length;
     ///   - the lease duration is [`DEFAULT_LEASE_DURATION_SECONDS`];
     ///   - the lease grace period is [`DEFAULT_LEASE_GRACE_SECONDS`].
     fn default() -> Self {
@@ -166,9 +440,58 @@ impl Default for LeaseParams {
     }
 }
 
-/// Builder of [`LeaseManager`].
+/// Convenient builder of [`LeaseManager`].
 ///
 /// It facilitates creating of the manager instance with reasonable defaults.
+///
+/// Please refer to [`LeaseParams`] and [`LeaseCreateMode`] for detailed explanation of each parameter.
+///
+/// ## Examples
+///
+/// To build default [`LeaseManager`]:
+///
+/// ```no_run
+/// use kube::Client;
+/// use kube_lease_manager::{LeaseManagerBuilder, LeaseManager, Result};
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let client = Client::try_default().await?;
+///     let manager = LeaseManagerBuilder::new(client, "my-unique-test-lease")
+///         .build()
+///         .await?;
+///     // ...
+///
+///     Ok(())
+/// }
+/// ```
+///
+/// Redefine everything possible:
+///
+/// ```no_run
+/// use kube::Client;
+/// use kube_lease_manager::{LeaseManagerBuilder, LeaseManager, Result, LeaseCreateMode};
+/// use uuid::Uuid;
+///
+/// #[tokio::main]
+/// async fn main() -> Result<()> {
+///     let identity = Uuid::new_v4();
+///     let client = Client::try_default().await?;
+///
+///     let manager = LeaseManagerBuilder::new(client, "existing-test-lease")
+///         .with_namespace("lease-manager-test-ns")
+///         .with_create_mode(LeaseCreateMode::UseExistent)
+///         .with_field_manager(format!("custom-field-manager-{identity}"))
+///         .with_identity(identity)
+///         .with_duration(128)
+///         .with_grace(16)
+///         .build()
+///         .await?;
+///     // ...
+///
+///     Ok(())
+/// }
+/// ```
 pub struct LeaseManagerBuilder {
     client: Client,
     lease_name: String,
@@ -179,6 +502,8 @@ pub struct LeaseManagerBuilder {
 
 impl LeaseManagerBuilder {
     /// Constructs minimal builder instance with all other parameters set to default values.
+    ///
+    /// See each builders' method for details about defaults and restrictions.
     pub fn new(client: Client, lease_name: impl Into<String>) -> Self {
         Self {
             client,
@@ -189,7 +514,12 @@ impl LeaseManagerBuilder {
         }
     }
 
-    /// Builds [`LeaseManager`] from the builder instance.
+    /// Builds [`LeaseManager`] from the builder instance using [`LeaseManager::new()`] constructor.
+    ///
+    /// This method is async since [`LeaseManager::new()`] is also async,
+    /// because constructor uses Kubernetes API to ensure the existence of the Lease resource.
+    ///
+    /// May return [`LeaseManagerError`] in case of issues with interacting with Kubernetes cluster using provided `client`.
     pub async fn build(self) -> Result<LeaseManager> {
         LeaseManager::new(
             self.client,
@@ -201,7 +531,7 @@ impl LeaseManagerBuilder {
         .await
     }
 
-    /// Use the specified Lease name instead of the one provided to [`LeaseManagerBuilder::new()`].
+    /// Use the specified `Lease` name instead of the one provided to [`LeaseManagerBuilder::new()`].
     pub fn with_lease_name(self, lease_name: impl Into<String>) -> Self {
         Self {
             lease_name: lease_name.into(),
@@ -209,7 +539,9 @@ impl LeaseManagerBuilder {
         }
     }
 
-    /// Updates namespace to create Lease resource onto.
+    /// Updates namespace which is used for `Lease` resource.
+    ///
+    /// Default value is `"default"`.
     pub fn with_namespace(self, namespace: impl Into<String>) -> Self {
         Self {
             namespace: namespace.into(),
@@ -217,26 +549,38 @@ impl LeaseManagerBuilder {
         }
     }
 
+    /// Updates [`LeaseCreateMode`] of the manager.
+    ///
+    /// The default value is [`AutoCreate`](LeaseCreateMode::AutoCreate).
     pub fn with_create_mode(self, create_mode: LeaseCreateMode) -> Self {
         Self { create_mode, ..self }
     }
 
-    /// Update whole LeaseParameters instance.
+    /// Updates whole [`LeaseParams`] instance of the manager.
     ///
     /// There four additional methods to set each parameters' value individually.
     pub fn with_parameters(self, params: LeaseParams) -> Self {
         Self { params, ..self }
     }
 
-    /// Updates parameters field manager value.
-    pub fn with_field_manager(self, field_manager: impl Into<String>) -> Self {
+    /// Updates `Lease` identity value.
+    ///
+    /// The default value is a random alphanumeric string of [`DEFAULT_RANDOM_IDENTITY_LEN`] length.
+    pub fn with_identity(self, identity: impl Into<String>) -> Self {
         Self {
-            params: self.params.with_field_manager(field_manager.into()),
+            params: LeaseParams {
+                identity: identity.into(),
+                ..self.params
+            },
             ..self
         }
     }
 
-    /// Updates Lease duration parameter.
+    /// Updates `Lease` duration parameter.
+    ///
+    /// Default is [30 seconds](DEFAULT_LEASE_DURATION_SECONDS).
+    ///
+    /// May panic if duration is less than 0, or if duration is less or equal to the current grace value.
     pub fn with_duration(self, duration: DurationSeconds) -> Self {
         Self {
             params: LeaseParams {
@@ -248,6 +592,10 @@ impl LeaseManagerBuilder {
     }
 
     /// Updates lease grace period parameter.
+    ///
+    /// Default is [5 seconds](DEFAULT_LEASE_GRACE_SECONDS).
+    ///
+    /// May panic if grace is less than 0, or if grace is greater or equal to the current duration value.
     pub fn with_grace(self, grace: DurationSeconds) -> Self {
         Self {
             params: LeaseParams { grace, ..self.params },
@@ -255,30 +603,38 @@ impl LeaseManagerBuilder {
         }
     }
 
-    /// Updates lease identity value.
-    pub fn with_identity(self, identity: impl Into<String>) -> Self {
+    /// Updates `Lease` field manager value.
+    ///
+    /// Default is `identity` string prefixed by `kube-lease-manager-`.
+    ///
+    /// Make sure that if you change, it has to be unique among other field managers withing the scope of the `Lease` resource.
+    pub fn with_field_manager(self, field_manager: impl Into<String>) -> Self {
         Self {
-            params: LeaseParams {
-                identity: identity.into(),
-                ..self.params
-            },
+            params: self.params.with_field_manager(field_manager.into()),
             ..self
         }
     }
 }
 
 impl LeaseManager {
-    /// Constructor
+    /// Basic constructor of the `LeaseManager` instance.
+    /// See [`LeaseManagerBuilder`] for another way to make it.
+    ///
+    /// Besides constructing of the `LeaseManager,` it ensures `Lease` resource with respect to specified `crate_mode`:
+    /// creates `Lease` resource or verifies its existence with specified name in the provided namespace.
+    ///
+    /// It may return [`LeaseManagerError`] in case of issues during interaction with Kubernetes cluster
+    /// using provided `client`'
     pub async fn new(
         client: Client,
-        lease_name: &str,
-        namespace: &str,
+        lease_name: impl Into<String>,
+        namespace: impl Into<String>,
         params: LeaseParams,
         create_mode: LeaseCreateMode,
     ) -> Result<Self> {
         let manager = Self {
             params,
-            state: RwLock::new(LeaseState::new(client, lease_name, namespace, create_mode).await?),
+            state: RwLock::new(LeaseState::new(client, lease_name.into(), &namespace.into(), create_mode).await?),
             is_leader: AtomicBool::new(false),
         };
 
@@ -286,10 +642,12 @@ impl LeaseManager {
         Ok(manager)
     }
 
-    /// Spawns a Tokio task and watch on leader changes permanently.
+    /// Spawns a [`Tokio`](https://docs.rs/tokio/latest/tokio/task/fn.spawn.html) task and watch on leader changes permanently.
+    ///
     /// If self-state changes (became a leader or lost the lock), it sends actual lock state to the channel.
     /// Exits if the channel is closed (all receivers are gone) or in case of any sending error.
     ///
+    /// See [`more details and examples`](LeaseManager#fully-automated-way) about this method and approach.
     pub async fn watch(self) -> (tokio::sync::watch::Receiver<bool>, JoinHandle<Result<LeaseManager>>) {
         let (sender, receiver) = tokio::sync::watch::channel(self.is_leader.load(Ordering::Relaxed));
         let watcher = async move {
@@ -347,9 +705,13 @@ impl LeaseManager {
         (receiver, handler)
     }
 
-    /// Try to lock lease and renew it periodically to prevent expiration.
+    /// Try to lock lease as soon as it's free and renew it periodically to prevent expiration.
     ///
     /// Returns own status of the leader lock as soon as it was changed (acquired or released).
+    ///
+    /// See [`detailed explanation and examples`](LeaseManager#partially-manual-approach).
+    ///
+    /// May return [`LeaseManagerError`] in case of issues during interaction with Kubernetes API.
     pub async fn changed(&self) -> Result<bool> {
         let mut backoff = BackoffSleep::new(
             MIN_CONFLICT_BACKOFF_TIME,
@@ -388,7 +750,12 @@ impl LeaseManager {
     /// Release self-lock if it's set, or do nothing if the lease is locked by another identity.
     ///
     /// It's useful to call this method to free locked lease gracefully before exit/shutdown
-    /// if you use [`LeaseManager::changed`] directly instead of using [`LeaseManager::watch`].
+    /// if you use [`LeaseManager::changed()`](LeaseManager::changed)
+    /// directly instead of using [`LeaseManager::watch()`](LeaseManager::watch).
+    ///
+    /// It's safe to call it even if this particular manager isn't a leader.
+    ///
+    /// May return [`LeaseManagerError`] in case of issues during interaction with Kubernetes API.
     pub async fn release(&self) -> Result<()> {
         self.state
             .write()
