@@ -1,0 +1,65 @@
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+yanked = "deny"
+
+[licenses]
+allow = ["MIT", "Apache-2.0"]
+confidence-threshold = 0.93
+exceptions = [
+    { allow = [
+        "ISC",
+    ], name = "untrusted" },
+    { allow = [
+        "ISC",
+    ], name = "rustls-webpki" },
+    { allow = [
+        "BSD-3-Clause",
+    ], name = "subtle" },
+    { allow = [
+        "Unicode-DFS-2016",
+    ], name = "unicode-ident" },
+    { allow = [
+        "OpenSSL",
+    ], name = "ring" },
+]
+
+[[licenses.clarify]]
+name = "ring"
+version = "*"
+expression = "OpenSSL"
+license-files = [
+    # Each entry is a crate relative path, and the (opaque) hash of its contents
+    { path = "LICENSE", hash = 0xbd0eed23 },
+]
+
+[licenses.private]
+ignore = false
+registries = [
+    #"https://sekretz.com/registry
+]
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow = []
+deny = []
+
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
