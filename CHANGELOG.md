@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.1.4] - 2024-07-08
+### Details
+#### Fixed
+- Fix doc build dependency using additional feature by @alex-karpenko in [#5](https://github.com/alex-karpenko/kube-lease-manager/pull/5)
+
 ## [0.1.3] - 2024-07-08
 ### Details
 #### Fixed
@@ -22,6 +27,7 @@ All notable changes to this project will be documented in this file.
 #### Changed
 - First release by @alex-karpenko in [#1](https://github.com/alex-karpenko/kube-lease-manager/pull/1)
 
+[0.1.4]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.3..v0.1.4
 [0.1.3]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.2..v0.1.3
 [0.1.2]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.1..v0.1.2
 [0.1.1]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.0..v0.1.1
