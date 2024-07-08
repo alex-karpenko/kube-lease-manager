@@ -102,6 +102,10 @@ async fn main() {
 
 Please visit [crate's documentation](https://docs.rs/kube-lease-manager/) to get more examples and usage details.
 
+## TODO
+
+- [ ] Provide some real and useful examples.
+
 ## Credits
 
 The author was inspired on this piece of work by two other crates that provide similar functionality:

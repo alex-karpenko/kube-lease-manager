@@ -346,6 +346,7 @@ impl From<LeaseStateError> for LeaseManagerError {
 ///
 /// This artificial example tries to run some workload as soon as it gets lease lock,
 /// and cancels workload if lock was lost.
+///
 /// Something similar is used in Kubernetes controllers that have several Pods running (to ensure high availability),
 /// but only one of them is eligible to make changes to the actual state.
 ///
@@ -430,7 +431,7 @@ impl From<LeaseStateError> for LeaseManagerError {
 ///
 /// ### Example
 ///
-/// This example shows how to start actual work only after acquiring  the lease lock and release lock after finish.
+/// This example shows how to start actual work only after acquiring the lease lock and release it after finish.
 ///
 /// ```no_run
 /// use kube::Client;
