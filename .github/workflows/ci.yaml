@@ -40,9 +40,10 @@ jobs:
       - name: Build
         run: cargo build
 
+      - name: Doc
+        run: cargo doc --no-deps
+
       - name: Light tests
-        # env:
-        #   RUST_LOG: kube_lease=debug
         run: cargo test --lib --all
 
       - uses: nolar/setup-k3d-k3s@v1
@@ -53,6 +54,4 @@ jobs:
           k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
 
       - name: Heavy tests
-        # env:
-        #   RUST_LOG: kube_lease_manager=debug
         run: cargo test --lib --all -- --ignored

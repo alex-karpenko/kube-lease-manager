@@ -141,7 +141,23 @@
 //! [`LeaseManagerBuilder`], [`LeaseParams`] and [`LeaseCreateMode`],
 //! as well as an explanation of the specific errors provided by [`LeaseManagerError`].
 //!
-
+//! ## Notes about dependencies
+//!
+//! 1. We depend on [`kube`](https://crates.io/crates/kube) as on the Kubernetes API library.
+//!    In the majority of possible use cases, interaction with Kubernetes API requires TLS,
+//!    so one of the relevant features of the `kube`
+//!    crate should be added to your dependencies: `rustls-tls` or `openssl-tls`.
+//!    Please consult with [`kube` crate documentation](https://crates.io/crates/kube).
+//!    We deliberately don't include such a dependency into `kube-lease-manager`
+//!    to don't force you to use a particular dependency,
+//!    it's up to you.
+//! 2. We use [`k8s-openapi`](https://crates.io/crates/k8s-openapi), it provides bindings for the Kubernetes client API.
+//!    If you use `kube-lease-manager`
+//!    in a binary crate, you have to add this dependency as well with one of the needed features enabled
+//!    to reflect a minimal version of Kubernetes API of your application.
+//!    For example, `v1_26` or `latest`.
+//!    Please consult with [`k8s-openapi` crate documentation](https://crates.io/crates/k8s-openapi).
+//!
 mod backoff;
 mod state;
 
@@ -400,7 +416,7 @@ impl From<LeaseStateError> for LeaseManagerError {
 ///        }
 ///    }
 ///
-///    // Explicitly close the control channel. But actually this is unreachable part die to endless loop above.
+///    // Explicitly close the control channel. But actually, this is unreachable part die to the endless loop above.
 ///    // drop(channel);
 ///    // let _manager = tokio::join!(task).0.unwrap()?;
 /// }
@@ -450,7 +466,7 @@ impl From<LeaseStateError> for LeaseManagerError {
 ///     let state = manager.changed().await?;
 ///     assert!(state);
 ///
-///     // Lets run two branches:
+///     // Let's run two branches:
 ///     // - first one watches on state to ensure we don't work with lost lease and refreshes lock
 ///     // - second one does actual work
 ///     tokio::select! {
