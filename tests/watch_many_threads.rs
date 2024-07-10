@@ -5,6 +5,7 @@
 /// - run "workload" when got the lock;
 /// - release lock by dropping channel;
 /// - exit.
+///
 /// As result, each manager holds lock for some time and publish its index and lock/unlock event
 /// to the channel for further analyzing.
 ///
@@ -77,7 +78,7 @@ fn watch_many_threads() -> Result<()> {
             unreachable!("Incorrect event type at previous step");
         }
     }
-    println!("");
+    println!();
 
     Ok(())
 }
