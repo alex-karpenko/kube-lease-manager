@@ -2,7 +2,7 @@
 name = "kube-lease-manager"
 authors = ["Oleksii Karpenko <alexkarpenko@yahoo.com>"]
 categories = ["api-bindings", "asynchronous"]
-description = "Ergonomic and durable leader election using Kubernetes Lease API."
+description = "Ergonomic and reliable leader election using Kubernetes Lease API."
 edition = "2021"
 rust-version = "1.75"
 homepage = "https://github.com/alex-karpenko/kube-lease-manager"
@@ -10,7 +10,7 @@ keywords = ["kubernetes", "async", "lease", "leader", "election"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/alex-karpenko/kube-lease-manager"
-version = "0.1.4"
+version = "0.1.5"
 exclude = [
     ".github/**",
     ".vscode/**",
