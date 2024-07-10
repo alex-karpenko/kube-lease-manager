@@ -1,5 +1,5 @@
 #![deny(unsafe_code)]
-//! Ergonomic and durable leader election using Kubernetes Lease API.
+//! Ergonomic and reliable leader election using Kubernetes Lease API.
 //!
 //! `kube-lease-manager` is a high-level helper to facilitate leader election using
 //! [Lease Kubernetes resource](https://kubernetes.io/docs/reference/kubernetes-api/cluster-resources/lease-v1/).
@@ -77,7 +77,7 @@
 //!   [with_field_manager()](LeaseParams::with_field_manager) method or using [`LeaseManagerBuilder`].
 //!
 //! The next config option is a [`LeaseCreateMode`]
-//! which defines the behavior how LeaseManager manages Lease Kubernetes resource during startup.
+//! which defines the behavior how [`LeaseManager`] manages Lease Kubernetes resource during startup.
 //! The default behavior is [`AutoCreate`](LeaseCreateMode::AutoCreate):
 //! create resource if it doesn't exist or use existing one if it's already present.
 //!

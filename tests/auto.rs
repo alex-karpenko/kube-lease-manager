@@ -1,19 +1,16 @@
 use kube::Client;
-use kube_lease_manager::LeaseManagerBuilder;
+use kube_lease_manager::{LeaseManagerBuilder, Result};
 use std::time::Duration;
 
 #[tokio::test]
 #[ignore = "uses k8s current-context"]
-async fn auto() {
+async fn auto() -> Result<()> {
     tracing_subscriber::fmt::init();
-    // Use default Kube client
-    let client = Client::try_default().await.unwrap();
+    // Use default Kube client.
+    let client = Client::try_default().await?;
     // Create the simplest LeaseManager with reasonable defaults using convenient builder.
     // It uses Lease resource called `test-watch-lease`.
-    let manager = LeaseManagerBuilder::new(client, "test-auto-lease")
-        .build()
-        .await
-        .unwrap();
+    let manager = LeaseManagerBuilder::new(client, "test-auto-lease").build().await?;
 
     let (mut channel, task) = manager.watch().await;
     // Watch on the channel for lock state changes
@@ -34,5 +31,7 @@ async fn auto() {
     // Explicitly close the control channel
     drop(channel);
     // Wait for the finish of the manager and get it back
-    let _manager = tokio::join!(task).0.unwrap().unwrap();
+    let _manager = tokio::join!(task).0.unwrap()?;
+
+    Ok(())
 }

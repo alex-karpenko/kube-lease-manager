@@ -1,6 +1,6 @@
 # kube-lease-manager
 
-Ergonomic and durable leader election using Kubernetes Lease API.
+Ergonomic and reliable leader election using Kubernetes Lease API.
 
 <p>
 <a href="https://github.com/alex-karpenko/kube-lease-manager/actions/workflows/ci.yaml" rel="nofollow"><img src="https://img.shields.io/github/actions/workflow/status/alex-karpenko/kube-lease-manager/ci.yaml?label=ci" alt="CI status"></a>
@@ -63,19 +63,18 @@ Second makes possible to acquire and release lock when you need it.
 The simplest example using first locking approach:
 ```rust
 use kube::Client;
-use kube_lease_manager::LeaseManagerBuilder;
+use kube_lease_manager::{LeaseManagerBuilder, Result};
 use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
    // Use default Kube client
-   let client = Client::try_default().await.unwrap();
+   let client = Client::try_default().await?;
    // Create the simplest LeaseManager with reasonable defaults using convenient builder.
    // It uses Lease resource called `test-watch-lease`.
-   let manager = LeaseManagerBuilder::new(client, "test-auto-lease")
+   let manager = LeaseManagerBuilder::new(client, "test-watch-lease")
            .build()
-           .await
-           .unwrap();
+           .await?;
 
    let (mut channel, task) = manager.watch().await;
    // Watch on the channel for lock state changes
@@ -96,7 +95,9 @@ async fn main() {
    // Explicitly close the control channel
    drop(channel);
    // Wait for the finish of the manager and get it back
-   let _manager = tokio::join!(task).0.unwrap().unwrap();
+   let _manager = tokio::join!(task).0.unwrap()?;
+
+   Ok(())
 }
 ```
 
