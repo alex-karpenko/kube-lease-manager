@@ -77,7 +77,7 @@ mod tests {
     use std::borrow::BorrowMut;
 
     use super::*;
-    use crate::tests::init_tracing;
+    use crate::manager::tests::init_tracing;
 
     #[test]
     fn ensure_every_next_is_longer() {
