@@ -105,7 +105,7 @@ Please visit [crate's documentation](https://docs.rs/kube-lease-manager/) to get
 
 ## TODO
 
-- [ ] Provide some real and useful examples.
+- [x] Provide some real and useful examples.
 
 ## Credits
 

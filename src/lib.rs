@@ -1,4 +1,4 @@
-#![deny(unsafe_code)]
+#![deny(unsafe_code, warnings, missing_docs)]
 //! Ergonomic and reliable leader election using Kubernetes Lease API.
 //!
 //! `kube-lease-manager` is a high-level helper to facilitate leader election using

@@ -1,7 +1,10 @@
-use backoff::{BackoffSleep, DurationFloat};
+use crate::{
+    backoff::{BackoffSleep, DurationFloat},
+    state::{LeaseLockOpts, LeaseState, LeaseStateError},
+    LeaseManagerError,
+};
 use kube::Client;
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
-use state::{LeaseLockOpts, LeaseState, LeaseStateError};
 use std::{
     fmt::Debug,
     sync::atomic::{AtomicBool, Ordering},
@@ -9,8 +12,6 @@ use std::{
 };
 use tokio::{select, sync::RwLock, task::JoinHandle};
 use tracing::{debug, error, trace};
-
-use crate::{backoff, state, LeaseManagerError};
 
 type DurationMillis = u64;
 
@@ -302,6 +303,7 @@ pub struct LeaseManager {
 impl LeaseParams {
     /// Constructs instances of `LeaseParams`.
     ///
+    /// # Panics
     /// Parameters should satisfy all conditions below, otherwise method panics:
     /// * duration > 0;
     /// * grace > 0;
@@ -438,7 +440,8 @@ impl LeaseManagerBuilder {
     /// This method is async since [`LeaseManager::new()`] is also async,
     /// because constructor uses Kubernetes API to ensure the existence of the Lease resource.
     ///
-    /// May return [`LeaseManagerError`] in case of issues with interacting with Kubernetes cluster using provided `client`.
+    /// # Errors
+    /// Returns [`LeaseManagerError`] in case of issues during interaction with Kubernetes cluster using provided `client`.
     pub async fn build(self) -> Result<LeaseManager> {
         LeaseManager::new(
             self.client,
@@ -499,7 +502,8 @@ impl LeaseManagerBuilder {
     ///
     /// Default is [30 seconds](DEFAULT_LEASE_DURATION_SECONDS).
     ///
-    /// May panic if duration is less than 0, or if duration is less or equal to the current grace value.
+    /// # Panics
+    /// If `duration` is less than 0, or if duration is less or equal to the current grace value.
     pub fn with_duration(self, duration: DurationSeconds) -> Self {
         Self {
             params: LeaseParams {
@@ -514,7 +518,8 @@ impl LeaseManagerBuilder {
     ///
     /// Default is [5 seconds](DEFAULT_LEASE_GRACE_SECONDS).
     ///
-    /// May panic if grace is less than 0, or if grace is greater or equal to the current duration value.
+    /// # Panics
+    /// If `grace` is less than 0, or if grace is greater or equal to the current duration value.
     pub fn with_grace(self, grace: DurationSeconds) -> Self {
         Self {
             params: LeaseParams { grace, ..self.params },
@@ -542,8 +547,8 @@ impl LeaseManager {
     /// Besides constructing of the `LeaseManager,` it ensures `Lease` resource with respect to specified `crate_mode`:
     /// creates `Lease` resource or verifies its existence with specified name in the provided namespace.
     ///
-    /// It may return [`LeaseManagerError`] in case of issues during interaction with Kubernetes cluster
-    /// using provided `client`'
+    /// # Errors
+    /// Returns [`LeaseManagerError`] in case of issues during interaction with Kubernetes cluster using provided `client`.
     pub async fn new(
         client: Client,
         lease_name: impl Into<String>,
@@ -630,7 +635,8 @@ impl LeaseManager {
     ///
     /// See [`detailed explanation and examples`](LeaseManager#partially-manual-approach).
     ///
-    /// May return [`LeaseManagerError`] in case of issues during interaction with Kubernetes API.
+    /// # Errors
+    /// Returns [`LeaseManagerError`] in case of issues during interaction with Kubernetes API.
     pub async fn changed(&self) -> Result<bool> {
         let mut backoff = BackoffSleep::new(
             MIN_CONFLICT_BACKOFF_TIME,
@@ -674,7 +680,8 @@ impl LeaseManager {
     ///
     /// It's safe to call it even if this particular manager isn't a leader.
     ///
-    /// May return [`LeaseManagerError`] in case of issues during interaction with Kubernetes API.
+    /// # Errors
+    /// Returns [`LeaseManagerError`] in case of issues during interaction with Kubernetes API.
     pub async fn release(&self) -> Result<()> {
         self.state
             .write()
