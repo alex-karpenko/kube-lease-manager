@@ -763,7 +763,7 @@ impl LeaseManager {
 }
 
 fn random_duration(min_millis: DurationMillis, max_millis: DurationMillis) -> Duration {
-    Duration::from_millis(thread_rng().gen_range(min_millis..max_millis))
+    Duration::from_millis(thread_rng().gen_range(min_millis..=max_millis))
 }
 
 fn random_string(len: usize) -> String {

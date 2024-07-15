@@ -25,7 +25,7 @@
 //!   and [Tokio](https://crates.io/crates/tokio)
 //!   crates to access Kubernetes API and coordinate asynchronous tasks execution.
 //! * You don't need to use low-level Kubernetes API.
-//! * Uses Tokio [`tracing`](https://crates.io/crates/tracing) carte to provide event logs.
+//! * Uses Tokio [tracing](https://crates.io/crates/tracing) carte to provide event logs.
 //!
 //! ---
 //!
