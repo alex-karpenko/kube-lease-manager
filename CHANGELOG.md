@@ -2,7 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
-## [0.1.5] - 2024-07-12
+## [0.1.6] - 2024-07-24
+### Details
+#### Fixed
+- Fix non-inclusive ranges of random generators by @alex-karpenko in [#9](https://github.com/alex-karpenko/kube-lease-manager/pull/9)
+- Fix concurrent Lease resource creating by @alex-karpenko in [#11](https://github.com/alex-karpenko/kube-lease-manager/pull/11)
+
+## [0.1.5] - 2024-07-13
 ### Details
 #### Added
 - Add example of watch approach - simple jobs logger by @alex-karpenko in [#8](https://github.com/alex-karpenko/kube-lease-manager/pull/8)
@@ -36,6 +42,7 @@ All notable changes to this project will be documented in this file.
 #### Changed
 - First release by @alex-karpenko in [#1](https://github.com/alex-karpenko/kube-lease-manager/pull/1)
 
+[0.1.6]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.5..v0.1.6
 [0.1.5]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.4..v0.1.5
 [0.1.4]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.3..v0.1.4
 [0.1.3]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.2..v0.1.3
