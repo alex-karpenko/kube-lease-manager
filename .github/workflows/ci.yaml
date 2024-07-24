@@ -46,7 +46,7 @@ jobs:
         run: cargo doc --no-deps
 
       - name: Light tests
-        run: cargo test --lib --all
+        run: cargo test --all
 
       - uses: nolar/setup-k3d-k3s@v1
         with:
@@ -56,4 +56,4 @@ jobs:
           k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
 
       - name: Heavy tests
-        run: cargo test --lib --all -- --ignored
+        run: cargo test --all -- --ignored
