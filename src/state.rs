@@ -303,7 +303,15 @@ impl LeaseState {
                 if let Ok(lease) = result {
                     Ok(lease)
                 } else if let Err(LeaseStateError::NonexistentLease(_)) = result {
-                    self.api.create(&pp, &data).await.map_err(LeaseStateError::from)
+                    // Try to create new Lease resource,
+                    // but don't panic if someone else created it while we're trying
+                    match self.api.create(&pp, &data).await {
+                        Ok(lease) => Ok(lease),
+                        Err(kube::Error::Api(err)) if err.reason == "AlreadyExists" && err.code == 409 => {
+                            self.get().await
+                        }
+                        Err(err) => Err(LeaseStateError::from(err)),
+                    }
                 } else {
                     result
                 }
