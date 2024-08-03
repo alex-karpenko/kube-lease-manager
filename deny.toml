@@ -25,12 +25,6 @@ exceptions = [
     { allow = [
         "OpenSSL",
     ], name = "ring" },
-    { allow = [
-        "BSD-2-Clause",
-    ], name = "zerocopy" },
-    { allow = [
-        "BSD-2-Clause",
-    ], name = "zerocopy-derive" },
 ]
 
 [[licenses.clarify]]
