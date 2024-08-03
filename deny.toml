@@ -25,6 +25,12 @@ exceptions = [
     { allow = [
         "OpenSSL",
     ], name = "ring" },
+    { allow = [
+        "BSD-2-Clause",
+    ], name = "zerocopy" },
+    { allow = [
+        "BSD-2-Clause",
+    ], name = "zerocopy-derive" },
 ]
 
 [[licenses.clarify]]
@@ -38,9 +44,6 @@ license-files = [
 
 [licenses.private]
 ignore = false
-registries = [
-    #"https://sekretz.com/registry
-]
 
 [bans]
 multiple-versions = "allow"

@@ -303,7 +303,7 @@ impl LeaseState {
                 if let Ok(lease) = result {
                     Ok(lease)
                 } else if let Err(LeaseStateError::NonexistentLease(_)) = result {
-                    // Try to create new Lease resource,
+                    // Try to create a new Lease resource,
                     // but don't panic if someone else created it while we're trying
                     match self.api.create(&pp, &data).await {
                         Ok(lease) => Ok(lease),
