@@ -717,7 +717,7 @@ impl LeaseManager {
             // Sleep some random time (up to 1000ms) to minimize collision probability
             tokio::time::sleep(random_duration(MIN_RELEASE_WAITING_MILLIS, MAX_RELEASE_WAITING_MILLIS)).await;
             res
-        } else if self.is_locked().await && !self.is_expired().await {
+        } else if self.is_locked().await {
             // It's locked by someone else and the lock is actual.
             // Sleep up to the expiration time of the lock.
             let holder = self.holder().await.unwrap();
