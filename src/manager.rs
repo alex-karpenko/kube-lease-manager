@@ -717,7 +717,7 @@ impl LeaseManager {
             // Sleep some random time (up to 1000ms) to minimize collision probability
             tokio::time::sleep(random_duration(MIN_RELEASE_WAITING_MILLIS, MAX_RELEASE_WAITING_MILLIS)).await;
             res
-        } else if self.is_locked().await && !self.is_expired().await {
+        } else if self.is_locked().await {
             // It's locked by someone else and the lock is actual.
             // Sleep up to the expiration time of the lock.
             let holder = self.holder().await.unwrap();
@@ -784,8 +784,8 @@ pub(crate) mod tests {
         api::{DeleteParams, PostParams},
         Api, Resource as _,
     };
-    use std::{collections::HashSet, sync::OnceLock};
-    use tokio::{join, select, sync::OnceCell};
+    use std::{collections::HashSet, sync::OnceLock, thread};
+    use tokio::{join, runtime::Runtime, select, sync::OnceCell};
 
     pub(crate) const TEST_NAMESPACE: &str = "kube-lease-test";
 
@@ -809,6 +809,47 @@ pub(crate) mod tests {
         TRACING.get_or_init(|| {
             tracing_subscriber::fmt::init();
         });
+    }
+
+    /// Implements Drop trait to delete Lease resource in case of test failure.
+    /// To use it add following statement at the beginning of a test function.
+    /// ```rust,no_run
+    /// let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+    /// ```
+    pub(crate) struct LeaseDropper {
+        /// Name of the Lease resource
+        name: String,
+        /// Namespace
+        ns: String,
+    }
+
+    impl LeaseDropper {
+        /// The single possible constructor
+        pub fn new(name: impl Into<String>, ns: impl Into<String>) -> Self {
+            Self {
+                name: name.into(),
+                ns: ns.into(),
+            }
+        }
+    }
+
+    impl Drop for LeaseDropper {
+        fn drop(&mut self) {
+            let name = self.name.clone();
+            let ns = self.ns.clone();
+
+            debug!(lease = %name, namespace = %ns, "dropping possibly orphaned lease");
+            let _ = thread::spawn(move || {
+                Runtime::new().unwrap().block_on(async {
+                    let client = Client::try_default().await.unwrap();
+                    let api = Api::<Lease>::namespaced(client, &ns);
+                    let dp = DeleteParams::default();
+
+                    let _ = api.delete(&name, &dp).await;
+                });
+            })
+            .join();
+        }
     }
 
     /// Unattended namespace creation
@@ -970,6 +1011,7 @@ pub(crate) mod tests {
     #[ignore = "uses k8s current-context"]
     async fn single_manager_watcher_step() {
         const LEASE_NAME: &str = "single-manager-watcher-step-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
         assert!(!managers[0].is_leader.load(Ordering::Relaxed));
@@ -997,6 +1039,7 @@ pub(crate) mod tests {
     #[ignore = "uses k8s current-context"]
     async fn single_manager_changed_loop() {
         const LEASE_NAME: &str = "single-manager-changed-loop-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
         assert!(!managers[0].is_leader.load(Ordering::Relaxed));
@@ -1024,6 +1067,7 @@ pub(crate) mod tests {
     #[ignore = "uses k8s current-context"]
     async fn two_managers_1st_expires_then_2nd_locks() {
         const LEASE_NAME: &str = "two-managers-1st-expires-then-2nd-locks-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
         let manager0 = managers.pop().unwrap();
@@ -1075,6 +1119,7 @@ pub(crate) mod tests {
     async fn many_managers_1st_expires_then_someone_locks() {
         const LEASE_NAME: &str = "many-managers-1st-expires-then-someone-locks-test";
         const MANAGERS: usize = 100;
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, MANAGERS).await;
 
@@ -1160,6 +1205,7 @@ pub(crate) mod tests {
     #[ignore = "uses k8s current-context"]
     async fn create_lease() {
         const LEASE_NAME: &str = "create-lease-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let client = init().await;
         let dp = DeleteParams::default();
@@ -1220,6 +1266,7 @@ pub(crate) mod tests {
     #[ignore = "uses k8s current-context"]
     async fn two_managers_1st_releases_then_2nd_locks() {
         const LEASE_NAME: &str = "two-managers-1st-releases-then-2nd-locks-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
         let manager0 = managers.pop().unwrap();
@@ -1270,6 +1317,7 @@ pub(crate) mod tests {
     #[ignore = "uses k8s current-context"]
     async fn single_watch_managers_handles_own_channel() {
         const LEASE_NAME: &str = "single-watch-managers-handle-channel-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
         let manager0 = managers.pop().unwrap();
@@ -1310,6 +1358,7 @@ pub(crate) mod tests {
     #[ignore = "uses k8s current-context"]
     async fn two_managers_1st_uses_changed_2nd_watch() {
         const LEASE_NAME: &str = "two-managers-1st-uses-changed-2nd-watch-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
         let manager0 = managers.remove(0);
@@ -1372,6 +1421,7 @@ pub(crate) mod tests {
     async fn many_managers_watch_one_by_one() {
         const LEASE_NAME: &str = "many-managers-watch-one-by-one-test";
         const NUMBER_OF_MANAGERS: usize = 10;
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let managers = setup_simple_managers_vec(LEASE_NAME, NUMBER_OF_MANAGERS).await;
 
@@ -1474,6 +1524,9 @@ pub(crate) mod tests {
         const CUSTOM_FIELD_MANAGER: &str = "custom-field-manager";
         const CUSTOM_IDENTITY0: &str = "custom-lease-manager-identity-0";
         const CUSTOM_IDENTITY: &str = "custom-lease-manager-identity";
+
+        let _dropper0 = LeaseDropper::new(LEASE_NAME0, TEST_NAMESPACE);
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let client = init().await;
         let builder = LeaseManagerBuilder::new(client, LEASE_NAME0);

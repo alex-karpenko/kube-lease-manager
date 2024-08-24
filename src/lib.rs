@@ -123,7 +123,7 @@
 //!             }
 //!         }
 //!         _ = tokio::time::sleep(Duration::from_secs(10)) => {
-//!             println!("Unable get lock during 10s");
+//!             println!("Unable to get lock during 10s");
 //!         }
 //!     }
 //!
