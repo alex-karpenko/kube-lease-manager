@@ -20,5 +20,4 @@ Cargo.lock
 # Local development artifacts
 TODO.md
 .vscode/
-mutants.out/
-mutants.out.old/
+mutants.*/

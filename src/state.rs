@@ -338,7 +338,7 @@ impl LeaseState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{init, sleep_secs, TEST_NAMESPACE};
+    use crate::tests::{init, sleep_secs, LeaseDropper, TEST_NAMESPACE};
     use k8s_openapi::api::coordination::v1::LeaseSpec;
     use kube::api::DeleteParams;
 
@@ -379,6 +379,7 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn rough_create_delete() {
         const LEASE_NAME: &str = "rough-create-delete-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let client = init().await;
         let state = LeaseState::new(client, LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::Ignore)
@@ -396,6 +397,8 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn simple_soft_lock_soft_release() {
         const LEASE_NAME: &str = "simple-soft-lock-soft-release-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 1).await;
 
         // Lock
@@ -423,6 +426,8 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn soft_lock_1st_soft_release_2nd() {
         const LEASE_NAME: &str = "soft-lock-1st-soft-release-2nd-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
 
         // Lock by 1st
@@ -476,6 +481,8 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn soft_lock_1st_force_release_2nd() {
         const LEASE_NAME: &str = "soft-lock-1st-force-release-2nd-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
 
         // Lock by 1st
@@ -511,6 +518,8 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn soft_lock_1st_soft_lock_2nd() {
         const LEASE_NAME: &str = "soft-lock-1st-soft-lock-2nd-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
 
         // Lock by 1st
@@ -564,6 +573,8 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn unattended_soft_lock_1st_soft_lock_2nd() {
         const LEASE_NAME: &str = "unattended-soft-lock-1st-soft-lock-2nd-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
 
         // Lock by 1st and 2nd
@@ -604,6 +615,8 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn unattended_soft_lock_1st_force_lock_2nd() {
         const LEASE_NAME: &str = "unattended-soft-lock-1st-force-lock-2nd-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
 
         // Lock by 1st and 2nd
@@ -645,6 +658,7 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn deleted_lease_state() {
         const LEASE_NAME: &str = "deleted-lease-state-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 1).await;
 
@@ -663,6 +677,7 @@ mod tests {
     #[ignore = "uses k8s current-context"]
     async fn update_lease_with_conflict() {
         const LEASE_NAME: &str = "update-lease-with-conflict-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
 
