@@ -108,6 +108,7 @@ pub enum LeaseCreateMode {
     /// If it doesn't exist, construct fails with [`NonexistentLease`](LeaseManagerError::NonexistentLease) error.
     UseExistent,
     #[cfg(test)]
+    /// Don't create a Lease resource and don't check its actual state, for test config only.
     Ignore,
 }
 
@@ -812,7 +813,7 @@ pub(crate) mod tests {
     }
 
     /// Implements Drop trait to delete Lease resource in case of test failure.
-    /// To use it add following statement at the beginning of a test function.
+    /// To use it add the following statement at the beginning of a test function.
     /// ```rust,no_run
     /// let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
     /// ```
