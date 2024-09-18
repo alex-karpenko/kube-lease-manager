@@ -137,10 +137,8 @@ impl LeaseState {
                         .lease_duration_seconds
                         .map(|d| Duration::from_secs(d as DurationSeconds));
 
-                    if renew.is_some() && duration.is_some() {
-                        let renew: SystemTime = renew.unwrap().0.into();
-                        let duration: Duration = duration.unwrap();
-
+                    if let (Some(renew), Some(duration)) = (renew, duration) {
+                        let renew: SystemTime = renew.0.into();
                         renew.checked_add(duration).unwrap()
                     } else {
                         SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
