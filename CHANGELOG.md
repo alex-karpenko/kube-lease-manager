@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.4.0] - 2024-09-18
+### Details
+#### Breaking changes
+- Update kube to v0.95, k8s-openapi to v0.23 by @alex-karpenko in [#14](https://github.com/alex-karpenko/kube-lease-manager/pull/14)
+
+#### Changed
+
 ## [0.3.0] - 2024-09-14
 ### Details
 #### Breaking changes
@@ -55,6 +62,7 @@ All notable changes to this project will be documented in this file.
 #### Changed
 - First release by @alex-karpenko in [#1](https://github.com/alex-karpenko/kube-lease-manager/pull/1)
 
+[0.4.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.3.0..v0.4.0
 [0.3.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.2.0..v0.3.0
 [0.2.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.6..v0.2.0
 [0.1.6]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.1.5..v0.1.6
