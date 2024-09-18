@@ -320,7 +320,7 @@ impl LeaseParams {
         }
 
         let identity = identity.into();
-        let field_manager = format!("{DEFAULT_FIELD_MANAGER_PREFIX}-{}", identity);
+        let field_manager = format!("{DEFAULT_FIELD_MANAGER_PREFIX}-{identity}");
         Self {
             identity,
             duration,
