@@ -33,9 +33,9 @@ body = """
 
 {% for commit in commits|filter(attribute="breaking", value=true) -%}
 - {{ commit.message | upper_first | trim }}\
-    {% if commit.github.username %} by @{{ commit.github.username }}{%- endif -%}
-    {% if commit.github.pr_number %} in \
-      [#{{ commit.github.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.github.pr_number }}) \
+    {% if commit.remote.username %} by @{{ commit.remote.username }}{%- endif -%}
+    {% if commit.remote.pr_number %} in \
+      [#{{ commit.remote.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.remote.pr_number }}) \
     {%- endif %}
 {% endfor -%}\
 
@@ -44,9 +44,9 @@ body = """
     {%- for commit in commits %}\
         {% if not commit.breaking %}
         - {{ commit.message | upper_first | trim }}\
-            {% if commit.github.username %} by @{{ commit.github.username }}{%- endif -%}
-            {% if commit.github.pr_number %} in \
-              [#{{ commit.github.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.github.pr_number }}) \
+            {% if commit.remote.username %} by @{{ commit.remote.username }}{%- endif -%}
+            {% if commit.remote.pr_number %} in \
+              [#{{ commit.remote.pr_number }}]({{ self::remote_url() }}/pull/{{ commit.remote.pr_number }}) \
             {%- endif -%}
         {%- endif -%}
     {% endfor %}
