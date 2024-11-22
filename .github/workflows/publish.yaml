@@ -53,10 +53,6 @@ jobs:
 
       - name: Setup toolchain
         uses: dtolnay/rust-toolchain@stable
-        with:
-          profile: minimal
-          toolchain: stable
-          override: true
 
       - name: Publish to Crates.io
         run: cargo publish --token ${CRATES_TOKEN}
