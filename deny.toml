@@ -20,11 +20,14 @@ exceptions = [
         "BSD-3-Clause",
     ], name = "instant" },
     { allow = [
-        "Unicode-DFS-2016",
-    ], name = "unicode-ident" },
-    { allow = [
         "OpenSSL",
     ], name = "ring" },
+    { allow = [
+        "Zlib",
+    ], name = "foldhash" },
+    { allow = [
+        "Unicode-3.0",
+    ], name = "unicode-ident" },
 ]
 
 [[licenses.clarify]]
