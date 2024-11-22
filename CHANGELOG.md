@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.6.0] - 2024-11-22
+### Details
+#### Breaking changes
+- Update dependencies: kube v0.97, thiserror v2.0 by @alex-karpenko in [#17](https://github.com/alex-karpenko/kube-lease-manager/pull/17)
+
+#### Changed
+
 ## [0.5.0] - 2024-10-12
 ### Details
 #### Breaking changes
@@ -69,6 +76,10 @@ All notable changes to this project will be documented in this file.
 #### Changed
 - First release by @alex-karpenko in [#1](https://github.com/alex-karpenko/kube-lease-manager/pull/1)
 
+## New Contributors
+* @alex-karpenko made their first contribution
+
+[0.6.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.5.0..v0.6.0
 [0.5.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.4.0..v0.5.0
 [0.4.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.3.0..v0.4.0
 [0.3.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.2.0..v0.3.0
