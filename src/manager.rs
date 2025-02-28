@@ -15,7 +15,7 @@ use tracing::{debug, error, trace};
 
 type DurationMillis = u64;
 
-/// Since all durations related to Lease resource are in seconds, this alias is useful.
+/// Since all duration related to Lease resource are in seconds, this alias is useful.
 pub type DurationSeconds = u64;
 /// Convenient alias for `Result`. Uses [`LeaseManagerError`] as an Error type.
 pub type Result<T, E = LeaseManagerError> = std::result::Result<T, E>;

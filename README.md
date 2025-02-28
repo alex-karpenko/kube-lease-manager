@@ -35,7 +35,7 @@ Some of the typical use cases:
   and [Tokio](https://crates.io/crates/tokio)
   crates to access Kubernetes API and coordinate asynchronous tasks execution.
 * You don't need to use low-level Kubernetes API.
-* Uses Tokio [tracing](https://crates.io/crates/tracing) carte to provide event logs.
+* Uses Tokio [tracing](https://crates.io/crates/tracing) crate to provide event logs.
 
 Please visit [crate's documentation](https://docs.rs/kube-lease-manager/) to get details and more examples.
 
