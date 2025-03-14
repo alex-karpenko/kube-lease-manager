@@ -2,21 +2,11 @@
 db-path = "~/.cargo/advisory-db"
 db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
-ignore = [
-    "RUSTSEC-2025-0012", # backoff crate is no longer actively maintained.
-    "RUSTSEC-2024-0384", # instant crate is no longer actively maintained.
-]
 
 [licenses]
-allow = ["MIT", "Apache-2.0", "ISC"]
+allow = ["MIT", "Apache-2.0", "ISC", "OpenSSL", "BSD-3-Clause"]
 confidence-threshold = 0.93
 exceptions = [
-    { allow = [
-        "BSD-3-Clause",
-    ], name = "subtle" },
-    { allow = [
-        "BSD-3-Clause",
-    ], name = "instant" },
     { allow = [
         "Zlib",
     ], name = "foldhash" },
