@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.8.0] - 2025-03-14
+### Details
+#### Breaking changes
+- Update kube v0.99, rand v0.9 by @alex-karpenko in [#25](https://github.com/alex-karpenko/kube-lease-manager/pull/25)
+
+#### Changed
+
 ## [0.7.0] - 2024-12-24
 ### Details
 #### Breaking changes
@@ -86,6 +93,7 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.8.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.7.0..v0.8.0
 [0.7.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.6.0..v0.7.0
 [0.6.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.5.0..v0.6.0
 [0.5.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.4.0..v0.5.0
