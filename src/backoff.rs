@@ -1,4 +1,4 @@
-use rand::{thread_rng, Rng};
+use rand::{rng, Rng};
 use std::time::Duration;
 use tracing::trace;
 
@@ -60,7 +60,7 @@ impl BackoffSleep {
             (min, max)
         };
 
-        let val = thread_rng().gen_range(min..=max);
+        let val = rng().random_range(min..=max);
         trace!(
             min = format!("{min:.3}"),
             val = format!("{val:.3}"),

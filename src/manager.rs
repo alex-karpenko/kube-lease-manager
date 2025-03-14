@@ -4,7 +4,7 @@ use crate::{
     LeaseManagerError,
 };
 use kube::Client;
-use rand::{distributions::Alphanumeric, thread_rng, Rng};
+use rand::{distr::Alphanumeric, rng, Rng};
 use std::{
     fmt::Debug,
     sync::atomic::{AtomicBool, Ordering},
@@ -15,7 +15,7 @@ use tracing::{debug, error, trace};
 
 type DurationMillis = u64;
 
-/// Since all duration related to Lease resource are in seconds, this alias is useful.
+/// Since all durations related to Lease resource are in seconds, this alias is useful.
 pub type DurationSeconds = u64;
 /// Convenient alias for `Result`. Uses [`LeaseManagerError`] as an Error type.
 pub type Result<T, E = LeaseManagerError> = std::result::Result<T, E>;
@@ -425,7 +425,7 @@ pub struct LeaseManagerBuilder {
 impl LeaseManagerBuilder {
     /// Constructs minimal builder instance with all other parameters set to default values.
     ///
-    /// See each builders' method for details about defaults and restrictions.
+    /// See each builder's method for details about defaults and restrictions.
     pub fn new(client: Client, lease_name: impl Into<String>) -> Self {
         Self {
             client,
@@ -481,7 +481,7 @@ impl LeaseManagerBuilder {
 
     /// Updates whole [`LeaseParams`] instance of the manager.
     ///
-    /// There four additional methods to set each parameters' value individually.
+    /// There four additional methods to set each parameter's value individually.
     pub fn with_parameters(self, params: LeaseParams) -> Self {
         Self { params, ..self }
     }
@@ -715,7 +715,7 @@ impl LeaseManager {
                 .release(&self.params, LeaseLockOpts::Force)
                 .await;
 
-            // Sleep some random time (up to 1000ms) to minimize collision probability
+            // Sleep some random time (up to 1000 ms) to minimize collision probability
             tokio::time::sleep(random_duration(MIN_RELEASE_WAITING_MILLIS, MAX_RELEASE_WAITING_MILLIS)).await;
             res
         } else if self.is_locked().await {
@@ -764,15 +764,11 @@ impl LeaseManager {
 }
 
 fn random_duration(min_millis: DurationMillis, max_millis: DurationMillis) -> Duration {
-    Duration::from_millis(thread_rng().gen_range(min_millis..=max_millis))
+    Duration::from_millis(rng().random_range(min_millis..=max_millis))
 }
 
 fn random_string(len: usize) -> String {
-    let rand: String = thread_rng()
-        .sample_iter(&Alphanumeric)
-        .take(len)
-        .map(char::from)
-        .collect();
+    let rand: String = rng().sample_iter(&Alphanumeric).take(len).map(char::from).collect();
     rand
 }
 
