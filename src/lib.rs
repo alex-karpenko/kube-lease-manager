@@ -32,17 +32,17 @@
 //!
 //! As mentioned above, `kube-lease-manager` provides two possible ways to manage lease lock:
 //! 1. _Fully automated_: you create a [`LeaseManager`] instance and run its [`watch()`](LeaseManager::watch())
-//! method.
+//!    method.
 //!    It returns [Tokio watch channel](https://docs.rs/tokio/latest/tokio/sync/watch/index.html)
-//! to watch on state changes
+//!    to watch on state changes
 //!    Besides that it runs an unattended background task
 //!    which permanently tries to lock lease if it's free and publish changed state to the channel.
 //!    The task finishes if the channel is closed.
 //! 2. _Partially manual_: you create [`LeaseManager`]
 //!    instance and use its [`changed()`](LeaseManager::changed())
 //!    and [`release()`](LeaseManager::release()) methods to control lock.
-//!    `changed()`
-//! tries to lock a lease as soon as it becomes free and returns the actual lock state when it's changed.
+//!    `changed()` tries to lock a lease as soon as it becomes free and returns the actual
+//!    lock state when it's changed.
 //!    Your responsibilities are:
 //!    - to keep `changed()` running (it's a `Future`) to ensure the lock is refreshing while it's in use;
 //!    - to call `release()` when you don't need the lock and want to make it free for others.
@@ -61,15 +61,15 @@
 //!   or you can explicitly specify identity string while creating `LeaseParams`
 //!   or directly via [`LeaseManagerBuilder`].
 //! * _duration_:
-//! this is a maximum duration (in seconds) of lock validity after the last renewal (confirmation) of the lock.
+//!   this is a maximum duration (in seconds) of lock validity after the last renewal (confirmation) of the lock.
 //!   In other words,
-//! the current lock holder is obliged to renew (re-confirm) its lock during this time after the last renewal.
+//!   the current lock holder is obliged to renew (re-confirm) its lock during this time after the last renewal.
 //!   If the holder didn't re-confirm the lock, any other `LeaseManager` instance is permitted to grab the lock.
 //!   The default value provided by `LeaseParams` is 30 seconds and may be configured.
 //! * _grace_: to avoid flapping losses of lock, the actual leaseholder tries to re-confirm (renew) lock earlier,
 //!   before it expires (before the end of the `duration` interval).
 //!   This parameter defines an interval (in seconds)
-//! before lock expiration when the lock holder has to renew its lock.
+//!   before lock expiration when the lock holder has to renew its lock.
 //!   As a side effect,
 //!   this interval can be considered as a maximum allowed time synchronization skew between nodes in the Kubernetes cluster
 //!   to avoid overlying locking.
@@ -159,7 +159,7 @@
 //!    to don't force you to use a particular dependency,
 //!    it's up to you.
 //! 2. We use [`k8s-openapi`](https://crates.io/crates/k8s-openapi),
-//! it provides bindings for the Kubernetes client API.
+//!    it provides bindings for the Kubernetes client API.
 //!    If you use `kube-lease-manager`
 //!    in a binary crate, you have to add this dependency as well with one of the necessary features enabled
 //!    to reflect a minimal version of Kubernetes API of your application.
