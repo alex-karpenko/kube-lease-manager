@@ -96,7 +96,7 @@ impl LeaseState {
         SystemTime::now() > self.expiry
     }
 
-    /// Check if the current holder is the same as `other` parameter.
+    /// Check if the current holder is the same as the `other` parameter.
     pub(crate) fn is_holder(&self, other: &str) -> bool {
         if let Some(holder) = &self.holder {
             holder == other
@@ -116,7 +116,7 @@ impl LeaseState {
             debug!(?opts, lease = %self.lease_name, "sync lease state");
             let result = self.get().await;
 
-            // If the Lease doesn't exist - clear state before exiting
+            // If the Lease doesn't exist - clear the state before exiting
             if let Err(LeaseStateError::NonexistentLease(_)) = &result {
                 debug!(lease = %self.lease_name, "erasing state because lease doesn't exists");
                 self.holder = None;

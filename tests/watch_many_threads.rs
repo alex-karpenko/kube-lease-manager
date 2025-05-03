@@ -1,15 +1,15 @@
-/// This test creates several OS threads and run `LeaseManager` on the each of them.
-/// Each thread creates its own `Tokio` runtime to run "workload" really concurrently,
+/// This test creates several threads and runs `LeaseManager` on each of them.
+/// Each thread creates its own `Tokio` runtime to run "workload" really concurrently
 /// and tries to:
 /// - lock lease using `watch()` approach;
 /// - run "workload" when got the lock;
 /// - release lock by dropping channel;
 /// - exit.
 ///
-/// As result, each manager holds lock for some time and publish its index and lock/unlock event
+/// As a result, each manager holds a lock for some time and publishes its index and lock/unlock event
 /// to the channel for further analyzing.
 ///
-/// Requirement is that channel contains correct sequence of events.
+/// The requirement is that a channel contains a correct sequence of events.
 ///
 use std::{
     sync::mpsc::{self, Sender},
@@ -107,7 +107,7 @@ fn run_watch_tread(index: usize, tx: Sender<Event>) -> Result<()> {
         let mut locked = *channel.borrow_and_update();
         loop {
             if !locked {
-                // Waiting for lock
+                // Waiting for a lock
                 while !locked {
                     if let Err(err) = channel.changed().await {
                         error!(%index, error = %err, "can't receive state");
