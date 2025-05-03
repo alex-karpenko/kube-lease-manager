@@ -23,13 +23,13 @@ Some of the typical use cases:
 ## Features
 
 * `LeaseManager` is a central part of the crate.
-  This is a convenient wrapper around a Kubernetes `Lease` resource to manage all aspects of leader election process.
+  This is a convenient wrapper around a Kubernetes `Lease` resource to manage all aspects of a leader election process.
 * Provides two different high-level approaches to lock and release lease:
   fully automated or partially manual lock control.
 * Uses [Server-Side-Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
   approach to update lease state that facilitates conflict detection and resolution
   and makes impossible concurrent locking.
-* Tolerate configurable time skew between nodes of the Kubernetes cluster.
+* Tolerates configurable time skew between nodes of the Kubernetes cluster.
 * Behavioral parameters of the lease manager are easily and flexibly configurable.
 * Uses well-known and highly appreciated [kube](https://crates.io/crates/kube)
   and [Tokio](https://crates.io/crates/tokio)
@@ -43,8 +43,8 @@ Please visit [crate's documentation](https://docs.rs/kube-lease-manager/) to get
 
 As mentioned above, `kube-lease-manager` provides two possible ways to manage lease lock:
 1. _Fully automated_: you create `LeaseManager` instance and run its `watch()` method.
-   It returns [Tokio watch channel](https://docs.rs/tokio/1.38.0/tokio/sync/watch/index.html) to watch on state changes
-   Besides that it runs an unattended background task
+   It returns [Tokio watch channel](https://docs.rs/tokio/1.38.0/tokio/sync/watch/index.html) to watch on state changes.
+   Besides that, it runs an unattended background task
    which permanently tries to lock lease if it's free and publish changed state to the channel.
    The task finishes if the channel is closed.
 2. _Partially manual_: you create `LeaseManager`
@@ -55,12 +55,12 @@ As mentioned above, `kube-lease-manager` provides two possible ways to manage le
    - to keep `changed()` running (it's a `Future`) to ensure lock is refreshing while it's in use;
    - to call `release()` when you don't need the lock and want to make it free for others.
 
-First way ensures that lease is locked (has a holder) at any moment of time.
-Second makes possible to acquire and release lock when you need it.
+The first way ensures that the lease is locked (has a holder) at any moment of time.
+Second makes it possible to acquire and release a lock when you need it.
 
 ## Example
 
-The simplest example using first locking approach:
+The simplest example using the first locking approach:
 ```rust
 use kube::Client;
 use kube_lease_manager::{LeaseManagerBuilder, Result};
@@ -68,10 +68,10 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() {
-   // Use default Kube client
+   // Use the default Kube client
    let client = Client::try_default().await?;
-   // Create the simplest LeaseManager with reasonable defaults using convenient builder.
-   // It uses Lease resource called `test-watch-lease`.
+   // Create the simplest LeaseManager with reasonable defaults using a convenient builder.
+   // It uses a Lease resource called `test-watch-lease`.
    let manager = LeaseManagerBuilder::new(client, "test-watch-lease")
            .build()
            .await?;

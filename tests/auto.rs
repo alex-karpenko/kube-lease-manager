@@ -6,10 +6,10 @@ use std::time::Duration;
 #[ignore = "uses k8s current-context"]
 async fn auto() -> Result<()> {
     tracing_subscriber::fmt::init();
-    // Use default Kube client.
+    // Use the default Kube client.
     let client = Client::try_default().await?;
-    // Create the simplest LeaseManager with reasonable defaults using convenient builder.
-    // It uses Lease resource called `test-watch-lease`.
+    // Create the simplest LeaseManager with reasonable defaults using a convenient builder.
+    // It uses a Lease resource called `test-watch-lease`.
     let manager = LeaseManagerBuilder::new(client, "test-auto-lease").build().await?;
 
     let (mut channel, task) = manager.watch().await;
