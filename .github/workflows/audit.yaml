@@ -10,6 +10,8 @@ on:
       - "**/Cargo.toml"
       - "**/Cargo.lock"
   pull_request:
+permissions:
+  contents: read
 
 jobs:
   security-audit:

@@ -7,8 +7,8 @@ use k8s_openapi::{
     serde_json,
 };
 use kube::{
-    api::{ObjectMeta, Patch, PatchParams, PostParams},
     Api, Client,
+    api::{ObjectMeta, Patch, PatchParams, PostParams},
 };
 use std::{
     fmt::Debug,
@@ -336,7 +336,7 @@ impl LeaseState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tests::{init, sleep_secs, LeaseDropper, TEST_NAMESPACE};
+    use crate::tests::{LeaseDropper, TEST_NAMESPACE, init, sleep_secs};
     use k8s_openapi::api::coordination::v1::LeaseSpec;
     use kube::api::DeleteParams;
 

@@ -8,15 +8,15 @@
 /// If it holds the leader lock - it ensures the logger is running.
 /// All other time it watches on lock changes or waits for INT signal.
 ///
-use futures::{future::ready, StreamExt};
+use futures::{StreamExt, future::ready};
 use k8s_openapi::api::batch::v1::Job;
 use kube::{
-    runtime::{reflector, watcher, WatchStreamExt},
     Api, Client,
+    runtime::{WatchStreamExt, reflector, watcher},
 };
 use kube_lease_manager::LeaseManagerBuilder;
 use tokio::{
-    signal::unix::{signal, SignalKind},
+    signal::unix::{SignalKind, signal},
     sync::watch::Receiver,
     task::JoinHandle,
 };

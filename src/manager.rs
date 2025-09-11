@@ -1,10 +1,10 @@
 use crate::{
+    LeaseManagerError,
     backoff::{BackoffSleep, DurationFloat},
     state::{LeaseLockOpts, LeaseState, LeaseStateError},
-    LeaseManagerError,
 };
 use kube::Client;
-use rand::{distr::Alphanumeric, rng, Rng};
+use rand::{Rng, distr::Alphanumeric, rng};
 use std::{
     fmt::Debug,
     sync::atomic::{AtomicBool, Ordering},
@@ -786,8 +786,8 @@ pub(crate) mod tests {
     use futures::future::select_all;
     use k8s_openapi::api::{coordination::v1::Lease, core::v1::Namespace};
     use kube::{
-        api::{DeleteParams, PostParams},
         Api, Resource as _,
+        api::{DeleteParams, PostParams},
     };
     use std::{collections::HashSet, sync::OnceLock, thread};
     use tokio::{join, runtime::Runtime, select, sync::OnceCell};

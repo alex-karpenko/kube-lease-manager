@@ -18,7 +18,7 @@ use std::{
 };
 
 use k8s_openapi::api::core::v1::Namespace;
-use kube::{api::PostParams, Api, Client, Resource};
+use kube::{Api, Client, Resource, api::PostParams};
 use kube_lease_manager::{DurationSeconds, LeaseManagerBuilder, Result};
 use tracing::{debug, error};
 
