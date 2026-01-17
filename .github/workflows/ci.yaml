@@ -20,7 +20,7 @@ jobs:
           - beta
           - 1.85.0
         k8s:
-          - v1.30
+          - v1.31
           - latest
 
     steps:
