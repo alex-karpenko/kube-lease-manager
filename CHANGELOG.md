@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.0] - 2026-01-17
+### Details
+#### Breaking changes
+- Update kube/v3.0, k8s-openapi/v0.27 dependencies, MSRV/v1.88, MK8SV/v1.31 by @alex-karpenko in [#29](https://github.com/alex-karpenko/kube-lease-manager/pull/29)
+
+#### Changed
+
 ## [0.10.0] - 2025-09-11
 ### Details
 #### Breaking changes
@@ -110,6 +117,7 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.11.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.10.0..v0.11.0
 [0.10.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.9.0..v0.10.0
 [0.9.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.8.0..v0.9.0
 [0.8.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.7.0..v0.8.0
