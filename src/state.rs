@@ -1,9 +1,6 @@
 use crate::{DurationSeconds, LeaseCreateMode, LeaseParams, Result};
 use k8s_openapi::{
-    api::coordination::v1::Lease,
-    apimachinery::pkg::apis::meta::v1::MicroTime,
-    chrono::{DateTime, Utc},
-    serde::Serialize,
+    api::coordination::v1::Lease, apimachinery::pkg::apis::meta::v1::MicroTime, jiff::Timestamp, serde::Serialize,
     serde_json,
 };
 use kube::{
@@ -160,7 +157,7 @@ impl LeaseState {
         self.sync(LeaseLockOpts::Soft).await?;
 
         let lease_duration_seconds = params.duration;
-        let now: DateTime<Utc> = SystemTime::now().into();
+        let now = Timestamp::now();
 
         // if we're the holder - refresh the lease
         let patch = if self.is_holder(&params.identity) {
@@ -684,7 +681,7 @@ mod tests {
         states[1].sync(LeaseLockOpts::Force).await.unwrap();
 
         // if the lock is orphaned - try to lock it softly
-        let now: DateTime<Utc> = SystemTime::now().into();
+        let now = Timestamp::now();
         let patch = serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
             "kind": "Lease",

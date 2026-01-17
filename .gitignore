@@ -21,3 +21,4 @@ Cargo.lock
 TODO.md
 .vscode/
 mutants.*/
+.harper-dictionary.txt

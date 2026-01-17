@@ -79,7 +79,7 @@ pub struct LeaseParams {
     pub(crate) identity: String,
     /// Duration of lease lock.
     pub(crate) duration: DurationSeconds,
-    /// Period of tme to renew lease lock before it expires.
+    /// Period of time to renew lease lock before it expires.
     pub(crate) grace: DurationSeconds,
     /// Field manager.
     field_manager: String,
