@@ -51,12 +51,27 @@ pub enum LeaseStateError {
     #[error("Lease resource `{0}` doesn't exist")]
     NonexistentLease(String),
 
+    /// Try to use inconsistent Lease resource.
+    /// Usually the root cause is external interference,
+    /// leaving the spec in inconsistent state, e.g. missing holderIdentity
+    /// but having renewTime or acquireTime set.
+    #[error("Lease resource `{0}` is in inconsistent state")]
+    InconsistentLease(String),
+
+    /// Try to use Lease resource with empty spec.
+    #[error("Lease resource `{0}` has empty spec")]
+    EmptyLeaseSpec(String),
+
     /// Internal lease state inconsistency detected.
     ///
     /// Usually the root cause is a bug.
     #[error("inconsistent LeaseManager state detected: {0}")]
     InconsistentState(String),
 }
+
+/// A deterministic name for unknown lease holder identity for inconsistent lease specifications.
+/// Note: Consider using random UUIDs to prevent collision with real identities.
+const INCONSISTENT_UNKNOWN_LEASE_HOLDER_IDENTITY: &str = "inconsistent_unknown_identity";
 
 /// Options to use for operations with lock.
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -113,41 +128,57 @@ impl LeaseState {
             debug!(?opts, lease = %self.lease_name, "sync lease state");
             let result = self.get().await;
 
-            // If the Lease doesn't exist - clear the state before exiting
-            if let Err(LeaseStateError::NonexistentLease(_)) = &result {
-                debug!(lease = %self.lease_name, "erasing state because lease doesn't exists");
-                self.holder = None;
-                self.transitions = 0;
-                self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+            match result {
+                Err(LeaseStateError::NonexistentLease(_)) => {
+                    debug!(lease = %self.lease_name, "erasing state because lease doesn't exists");
+                    self.holder = None;
+                    self.transitions = 0;
+                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
 
-                return Err(result.err().unwrap());
-            }
+                    return Err(result.err().unwrap());
+                }
+                Err(LeaseStateError::EmptyLeaseSpec(_)) => {
+                    debug!(lease = %self.lease_name, "lease `spec` field is empty");
+                    self.holder = None;
+                    self.transitions = 0;
+                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
 
-            // If success or non-404 - try to unwrap spec and do sync
-            let result = result?;
-            if let Some(lease) = result.spec {
-                self.holder = lease.holder_identity;
-                self.transitions = lease.lease_transitions.unwrap_or(0);
-                self.expiry = {
-                    let renew = lease.renew_time;
-                    let duration = lease
-                        .lease_duration_seconds
-                        .map(|d| Duration::from_secs(d as DurationSeconds));
+                    return Ok(());
+                }
+                Err(LeaseStateError::InconsistentLease(_)) => {
+                    debug!(lease = %self.lease_name, "lease `spec` field is inconsistent. Considering it as held and expired.");
+                    self.holder = Some(INCONSISTENT_UNKNOWN_LEASE_HOLDER_IDENTITY.to_string());
+                    self.transitions = 0;
+                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
 
-                    if let (Some(renew), Some(duration)) = (renew, duration) {
-                        let renew: SystemTime = renew.0.into();
-                        renew.checked_add(duration).unwrap()
-                    } else {
-                        SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
-                    }
-                };
-            } else {
-                // Empty spec in the Lease
-                debug!(lease = %self.lease_name, "lease `spec` field is empty");
-                self.holder = None;
-                self.transitions = 0;
-                self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
-            }
+                    return Ok(());
+                }
+                Err(err) => {
+                    return Err(err);
+                }
+                Ok(lease) if lease.spec.is_some() => {
+                    let lease = lease.spec.unwrap();
+
+                    self.holder = lease.holder_identity;
+                    self.transitions = lease.lease_transitions.unwrap_or(0);
+                    self.expiry = {
+                        let renew = lease.renew_time;
+                        let duration = lease
+                            .lease_duration_seconds
+                            .map(|d| Duration::from_secs(d as DurationSeconds));
+
+                        if let (Some(renew), Some(duration)) = (renew, duration) {
+                            let renew: SystemTime = renew.0.into();
+                            renew.checked_add(duration).unwrap()
+                        } else {
+                            SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
+                        }
+                    };
+                }
+                Ok(_) => {
+                    return Ok(());
+                }
+            };
         }
 
         Ok(())
@@ -271,7 +302,15 @@ impl LeaseState {
 
         // Map error is it doesn't exists
         match result {
-            Ok(lease) => Ok(lease),
+            Ok(lease) => match &lease.spec {
+                None => Err(LeaseStateError::EmptyLeaseSpec(self.lease_name.clone())),
+                Some(spec)
+                    if spec.holder_identity.is_none() && (spec.renew_time.is_some() || spec.acquire_time.is_some()) =>
+                {
+                    Err(LeaseStateError::InconsistentLease(self.lease_name.clone()))
+                }
+                Some(_) => Ok(lease),
+            },
             Err(kube::Error::Api(err)) if err.code == 404 => {
                 Err(LeaseStateError::NonexistentLease(self.lease_name.clone()))
             }
