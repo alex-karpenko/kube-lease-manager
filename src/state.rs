@@ -129,6 +129,7 @@ impl LeaseState {
             let result = self.get().await;
 
             match result {
+                // If the Lease doesn't exist - clear the state and forward the error
                 Err(LeaseStateError::NonexistentLease(_)) => {
                     debug!(lease = %self.lease_name, "erasing state because lease doesn't exists");
                     self.holder = None;
@@ -137,25 +138,27 @@ impl LeaseState {
 
                     return Err(result.err().unwrap());
                 }
+                // Empty spec in the Lease - clear the state
                 Err(LeaseStateError::EmptyLeaseSpec(_)) => {
                     debug!(lease = %self.lease_name, "lease `spec` field is empty");
                     self.holder = None;
                     self.transitions = 0;
                     self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
-
-                    return Ok(());
                 }
+                // Inconsistent spec in the Lease - set holder to a deterministic unknown identity
+                // and enforce it as expired. This will allow the manager to proceed with releasing
+                // the lease.
                 Err(LeaseStateError::InconsistentLease(_)) => {
                     debug!(lease = %self.lease_name, "lease `spec` field is inconsistent. Considering it as held and expired.");
                     self.holder = Some(INCONSISTENT_UNKNOWN_LEASE_HOLDER_IDENTITY.to_string());
-                    self.transitions = 0;
+                    self.transitions = 0; // Should not matter
                     self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
-
-                    return Ok(());
                 }
+                // Forward any other errors
                 Err(err) => {
                     return Err(err);
                 }
+                // Update the state from the retrieved Lease
                 Ok(lease) if lease.spec.is_some() => {
                     let lease = lease.spec.unwrap();
 
@@ -175,8 +178,14 @@ impl LeaseState {
                         }
                     };
                 }
+                // Empty spec in the Lease - clear the state
+                // Note: This branch is unreachable because of get() now returns error on empty spec,
+                // but kept here for code clarity.
                 Ok(_) => {
-                    return Ok(());
+                    debug!(lease = %self.lease_name, "lease `spec` field is empty");
+                    self.holder = None;
+                    self.transitions = 0;
+                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
                 }
             };
         }
