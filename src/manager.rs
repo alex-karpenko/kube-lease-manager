@@ -878,9 +878,12 @@ pub(crate) mod tests {
 
         let pp = PostParams::default();
         // Creates a Lease without holder identify but with renew_time/acquire_time
-        let mut spec = LeaseSpec::default();
-        spec.renew_time = renew_time;
-        spec.acquire_time = acquire_time;
+        let spec = LeaseSpec {
+            renew_time,
+            acquire_time,
+            ..Default::default()
+        };
+
         let data = Lease {
             metadata: ObjectMeta {
                 name: Some(lease_name.to_string()),
