@@ -51,17 +51,6 @@ pub enum LeaseStateError {
     #[error("Lease resource `{0}` doesn't exist")]
     NonexistentLease(String),
 
-    /// Try to use inconsistent Lease resource.
-    /// Usually the root cause is external interference,
-    /// leaving the spec in inconsistent state, e.g. missing holderIdentity
-    /// but having renewTime or acquireTime set.
-    #[error("Lease resource `{0}` is in inconsistent state")]
-    InconsistentLease(String),
-
-    /// Try to use Lease resource with empty spec.
-    #[error("Lease resource `{0}` has empty spec")]
-    EmptyLeaseSpec(String),
-
     /// Internal lease state inconsistency detected.
     ///
     /// Usually the root cause is a bug.
@@ -127,67 +116,41 @@ impl LeaseState {
             debug!(?opts, lease = %self.lease_name, "sync lease state");
             let result = self.get().await;
 
-            match result {
-                // If the Lease doesn't exist - clear the state and forward the error
-                Err(LeaseStateError::NonexistentLease(_)) => {
-                    debug!(lease = %self.lease_name, "erasing state because lease doesn't exists");
-                    self.holder = None;
-                    self.transitions = 0;
-                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+            // If the Lease doesn't exist - clear the state before exiting
+            if let Err(LeaseStateError::NonexistentLease(_)) = &result {
+                debug!(lease = %self.lease_name, "erasing state because lease doesn't exists");
+                self.holder = None;
+                self.transitions = 0;
+                self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
 
-                    return Err(result.err().unwrap());
-                }
-                // Empty spec in the Lease - clear the state
-                Err(LeaseStateError::EmptyLeaseSpec(_)) => {
-                    debug!(lease = %self.lease_name, "lease `spec` field is empty");
-                    self.holder = None;
-                    self.transitions = 0;
-                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
-                }
-                // Inconsistent spec in the Lease - set holder to a deterministic unknown identity
-                // and enforce it as expired. This will allow the manager to proceed with releasing
-                // the lease.
-                Err(LeaseStateError::InconsistentLease(_)) => {
-                    let unknown_identity = format!("{}{}", INCONSISTENT_LEASE_HOLDER_IDENTITY_PREFIX, random_string(6));
-                    debug!(lease = %self.lease_name, "lease `spec` field is inconsistent. Considering it as held by {} and expired.", unknown_identity);
-                    self.holder = Some(unknown_identity);
-                    self.transitions = 0; // Should not matter
-                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
-                }
-                // Forward any other errors
-                Err(err) => {
-                    return Err(err);
-                }
-                // Update the state from the retrieved Lease
-                Ok(lease) if lease.spec.is_some() => {
-                    let lease = lease.spec.unwrap();
+                return Err(result.err().unwrap());
+            }
 
-                    self.holder = lease.holder_identity;
-                    self.transitions = lease.lease_transitions.unwrap_or(0);
-                    self.expiry = {
-                        let renew = lease.renew_time;
-                        let duration = lease
-                            .lease_duration_seconds
-                            .map(|d| Duration::from_secs(d as DurationSeconds));
+            // If success or non-404 - try to unwrap spec and do sync
+            let result = result?;
+            if let Some(lease) = result.spec {
+                self.holder = lease.holder_identity;
+                self.transitions = lease.lease_transitions.unwrap_or(0);
+                self.expiry = {
+                    let renew = lease.renew_time;
+                    let duration = lease
+                        .lease_duration_seconds
+                        .map(|d| Duration::from_secs(d as DurationSeconds));
 
-                        if let (Some(renew), Some(duration)) = (renew, duration) {
-                            let renew: SystemTime = renew.0.into();
-                            renew.checked_add(duration).unwrap()
-                        } else {
-                            SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
-                        }
-                    };
-                }
-                // Empty spec in the Lease - clear the state
-                // Note: This branch is unreachable because of get() now returns error on empty spec,
-                // but kept here for code clarity.
-                Ok(_) => {
-                    debug!(lease = %self.lease_name, "lease `spec` field is empty");
-                    self.holder = None;
-                    self.transitions = 0;
-                    self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
-                }
-            };
+                    if let (Some(renew), Some(duration)) = (renew, duration) {
+                        let renew: SystemTime = renew.0.into();
+                        renew.checked_add(duration).unwrap()
+                    } else {
+                        SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
+                    }
+                };
+            } else {
+                // Empty spec in the Lease
+                debug!(lease = %self.lease_name, "lease `spec` field is empty");
+                self.holder = None;
+                self.transitions = 0;
+                self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+            }
         }
 
         Ok(())
@@ -312,13 +275,28 @@ impl LeaseState {
         // Map error is it doesn't exists
         match result {
             Ok(lease) => match &lease.spec {
-                None => Err(LeaseStateError::EmptyLeaseSpec(self.lease_name.clone())),
+                // Inconsistent spec
                 Some(spec)
                     if spec.holder_identity.is_none() && (spec.renew_time.is_some() || spec.acquire_time.is_some()) =>
                 {
-                    Err(LeaseStateError::InconsistentLease(self.lease_name.clone()))
+                    // Lease is small so cheap to clone
+                    let mut lease = lease.clone();
+                    let mut spec = spec.clone();
+                    // We enforce the missing holder_identity to a deterministic unknown identity
+                    let unknown_identity = format!("{}{}", INCONSISTENT_LEASE_HOLDER_IDENTITY_PREFIX, random_string(6));
+                    spec.holder_identity = Some(unknown_identity);
+                    // We erase renew_time to make it expired automatically
+                    // This logic mainly depends on the `sync` implementation. If
+                    // that changes, this part may need to be updated as well.
+                    spec.renew_time = None;
+                    lease.spec = Some(spec);
+
+                    Ok(lease)
                 }
+                // Consistent spec
                 Some(_) => Ok(lease),
+                // Empty spec
+                None => Ok(lease),
             },
             Err(kube::Error::Api(err)) if err.code == 404 => {
                 Err(LeaseStateError::NonexistentLease(self.lease_name.clone()))
@@ -382,39 +360,9 @@ impl LeaseState {
 mod tests {
 
     use super::*;
-    use crate::tests::{LeaseDropper, TEST_NAMESPACE, init, sleep_secs};
+    use crate::tests::{LeaseDropper, TEST_NAMESPACE, init, setup_inconsistent_lease, sleep_secs};
     use k8s_openapi::api::coordination::v1::LeaseSpec;
     use kube::api::DeleteParams;
-
-    /// Set up a Lease with inconsistent spec for testing.
-    ///
-    /// Pass either `renew_time` or `acquire_time` as `Some` and the other as `None`.
-    /// Passing both as `Some` is also fine.
-    async fn setup_inconsistent_lease(
-        lease_name: &str,
-        renew_time: Option<MicroTime>,
-        acquire_time: Option<MicroTime>,
-    ) -> Result<(), LeaseStateError> {
-        let client = init().await;
-        let api = Api::<Lease>::namespaced(client, TEST_NAMESPACE);
-
-        let pp = PostParams::default();
-        // Creates a Lease without holder identify but with renew_time/acquire_time
-        let mut spec = LeaseSpec::default();
-        spec.renew_time = renew_time;
-        spec.acquire_time = acquire_time;
-        let data = Lease {
-            metadata: ObjectMeta {
-                name: Some(lease_name.to_string()),
-                ..Default::default()
-            },
-            spec: Some(spec),
-        };
-
-        api.create(&pp, &data).await.map_err(LeaseStateError::from)?;
-
-        Ok(())
-    }
 
     async fn setup_simple_leaders_vec(
         lease_name: &str,
@@ -468,6 +416,58 @@ mod tests {
         let lease = state.create(LeaseCreateMode::CreateNew).await.unwrap();
         assert!(lease.spec.is_some());
         assert_eq!(lease.spec.unwrap(), LeaseSpec::default());
+
+        state.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
+    async fn auto_create_with_existing_inconsistent_lease() {
+        const LEASE_NAME: &str = "auto-create-with-existing-inconsistent-lease-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
+        // Creating an inconsistent Lease first
+        setup_inconsistent_lease(LEASE_NAME, Some(MicroTime(Timestamp::now())), None)
+            .await
+            .expect("Inconsistent Lease failed to get created as part of this test preparation. Please fix it.");
+
+        let client = init().await;
+        let state = LeaseState::new(client, LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::Ignore)
+            .await
+            .unwrap();
+
+        let lease = state.create(LeaseCreateMode::AutoCreate).await.unwrap();
+        assert!(lease.spec.is_some());
+        let spec = lease.spec.unwrap();
+        // Expect artificial holder identity and no renew time for immediate expiration
+        assert!(spec.holder_identity.is_some());
+        assert!(spec.renew_time.is_none());
+
+        state.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
+    async fn use_existent_with_existing_inconsistent_lease() {
+        const LEASE_NAME: &str = "use-existent-with-existing-inconsistent-lease-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
+        // Creating an inconsistent Lease first
+        setup_inconsistent_lease(LEASE_NAME, Some(MicroTime(Timestamp::now())), None)
+            .await
+            .expect("Inconsistent Lease failed to get created as part of this test preparation. Please fix it.");
+
+        let client = init().await;
+        let state = LeaseState::new(client, LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::Ignore)
+            .await
+            .unwrap();
+
+        let lease = state.create(LeaseCreateMode::UseExistent).await.unwrap();
+        assert!(lease.spec.is_some());
+        let spec = lease.spec.unwrap();
+        // Expect artificial holder identity and no renew time for immediate expiration
+        assert!(spec.holder_identity.is_some());
+        assert!(spec.renew_time.is_none());
 
         state.delete().await.unwrap();
     }

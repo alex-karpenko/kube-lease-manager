@@ -784,10 +784,17 @@ pub(crate) fn random_string(len: usize) -> String {
 pub(crate) mod tests {
     use super::*;
     use futures::future::select_all;
-    use k8s_openapi::api::{coordination::v1::Lease, core::v1::Namespace};
+    use k8s_openapi::{
+        api::{
+            coordination::v1::{Lease, LeaseSpec},
+            core::v1::Namespace,
+        },
+        apimachinery::pkg::apis::meta::v1::MicroTime,
+        jiff::Timestamp,
+    };
     use kube::{
         Api, Resource as _,
-        api::{DeleteParams, PostParams},
+        api::{DeleteParams, ObjectMeta, PostParams},
     };
     use std::{collections::HashSet, sync::OnceLock, thread};
     use tokio::{join, runtime::Runtime, select, sync::OnceCell};
@@ -857,6 +864,36 @@ pub(crate) mod tests {
         }
     }
 
+    /// Set up a Lease with inconsistent spec for testing.
+    ///
+    /// Pass either `renew_time` or `acquire_time` as `Some` and the other as `None`.
+    /// Passing both as `Some` is also fine.
+    pub(crate) async fn setup_inconsistent_lease(
+        lease_name: &str,
+        renew_time: Option<MicroTime>,
+        acquire_time: Option<MicroTime>,
+    ) -> Result<(), LeaseStateError> {
+        let client = init().await;
+        let api = Api::<Lease>::namespaced(client, TEST_NAMESPACE);
+
+        let pp = PostParams::default();
+        // Creates a Lease without holder identify but with renew_time/acquire_time
+        let mut spec = LeaseSpec::default();
+        spec.renew_time = renew_time;
+        spec.acquire_time = acquire_time;
+        let data = Lease {
+            metadata: ObjectMeta {
+                name: Some(lease_name.to_string()),
+                ..Default::default()
+            },
+            spec: Some(spec),
+        };
+
+        api.create(&pp, &data).await.map_err(LeaseStateError::from)?;
+
+        Ok(())
+    }
+
     /// Unattended namespace creation
     async fn create_namespace(client: Client) {
         let api = Api::<Namespace>::all(client);
@@ -868,7 +905,7 @@ pub(crate) mod tests {
         api.create(&pp, &data).await.unwrap_or_default();
     }
 
-    async fn setup_simple_managers_vec(lease_name: &str, count: usize) -> Vec<LeaseManager> {
+    async fn setup_simple_managers_vec(lease_name: &str, count: usize, create_lease: bool) -> Vec<LeaseManager> {
         const LEASE_DURATION_SECONDS: DurationSeconds = 2;
         const LEASE_GRACE_SECONDS: DurationSeconds = 1;
 
@@ -890,13 +927,15 @@ pub(crate) mod tests {
         }
 
         // Create lease
-        let _ = managers[0]
-            .state
-            .read()
-            .await
-            .create(LeaseCreateMode::CreateNew)
-            .await
-            .unwrap();
+        if create_lease {
+            let _ = managers[0]
+                .state
+                .read()
+                .await
+                .create(LeaseCreateMode::CreateNew)
+                .await
+                .unwrap();
+        }
         managers
     }
 
@@ -1018,7 +1057,7 @@ pub(crate) mod tests {
         const LEASE_NAME: &str = "single-manager-watcher-step-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
+        let managers = setup_simple_managers_vec(LEASE_NAME, 1, true).await;
         assert!(!managers[0].is_leader.load(Ordering::Relaxed));
         assert!(!managers[0].state.read().await.is_holder(&managers[0].params.identity));
         assert!(!managers[0].state.read().await.is_locked());
@@ -1046,7 +1085,7 @@ pub(crate) mod tests {
         const LEASE_NAME: &str = "single-manager-changed-loop-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
+        let managers = setup_simple_managers_vec(LEASE_NAME, 1, true).await;
         assert!(!managers[0].is_leader.load(Ordering::Relaxed));
 
         let is_leader = managers[0].changed().await.unwrap();
@@ -1074,7 +1113,7 @@ pub(crate) mod tests {
         const LEASE_NAME: &str = "two-managers-1st-expires-then-2nd-locks-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2, true).await;
         let manager0 = managers.pop().unwrap();
         let manager1 = managers.pop().unwrap();
 
@@ -1126,7 +1165,7 @@ pub(crate) mod tests {
         const MANAGERS: usize = 100;
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let mut managers = setup_simple_managers_vec(LEASE_NAME, MANAGERS).await;
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, MANAGERS, true).await;
 
         for manager in &managers {
             assert!(!manager.is_leader.load(Ordering::Relaxed));
@@ -1273,7 +1312,7 @@ pub(crate) mod tests {
         const LEASE_NAME: &str = "two-managers-1st-releases-then-2nd-locks-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2, true).await;
         let manager0 = managers.pop().unwrap();
         let manager1 = managers.pop().unwrap();
 
@@ -1324,7 +1363,7 @@ pub(crate) mod tests {
         const LEASE_NAME: &str = "single-watch-managers-handle-channel-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let mut managers = setup_simple_managers_vec(LEASE_NAME, 1).await;
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 1, true).await;
         let manager0 = managers.pop().unwrap();
 
         assert!(!manager0.is_leader.load(Ordering::Relaxed));
@@ -1365,7 +1404,7 @@ pub(crate) mod tests {
         const LEASE_NAME: &str = "two-managers-1st-uses-changed-2nd-watch-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2).await;
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2, true).await;
         let manager0 = managers.remove(0);
         let manager1 = managers.remove(0);
 
@@ -1428,7 +1467,7 @@ pub(crate) mod tests {
         const NUMBER_OF_MANAGERS: usize = 10;
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let managers = setup_simple_managers_vec(LEASE_NAME, NUMBER_OF_MANAGERS).await;
+        let managers = setup_simple_managers_vec(LEASE_NAME, NUMBER_OF_MANAGERS, true).await;
 
         // ensure there is no holders
         assert_eq!(
@@ -1584,5 +1623,29 @@ pub(crate) mod tests {
 
         // Clean up
         manager.state.read().await.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
+    async fn manager_read_inconsistent_lease_then_release_and_lock() {
+        const LEASE_NAME: &str = "manager-read-inconsistent-lease-then-release-and-lock-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
+        setup_inconsistent_lease(LEASE_NAME, Some(MicroTime(Timestamp::now())), None)
+            .await
+            .expect("Inconsistent Lease failed to get created as part of this test preparation. Please fix it.");
+
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 1, false).await;
+        let manager0 = managers.pop().unwrap();
+
+        assert!(!manager0.is_leader.load(Ordering::Relaxed));
+
+        // Lock by 1st
+        let is_leader = manager0.changed().await.unwrap();
+        assert!(is_leader);
+        assert!(manager0.is_leader.load(Ordering::Relaxed));
+
+        // Clean up
+        manager0.state.read().await.delete().await.unwrap();
     }
 }

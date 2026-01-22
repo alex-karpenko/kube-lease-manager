@@ -42,8 +42,6 @@ impl From<LeaseStateError> for LeaseManagerError {
             LeaseStateError::LeaseAlreadyExists(lease) => LeaseManagerError::LeaseAlreadyExists(lease),
             LeaseStateError::NonexistentLease(lease) => LeaseManagerError::NonexistentLease(lease),
             LeaseStateError::InconsistentState(err) => LeaseManagerError::InconsistentState(err),
-            LeaseStateError::InconsistentLease(_) => unreachable!("this branch is unreachable, looks like a BUG!"),
-            LeaseStateError::EmptyLeaseSpec(_) => unreachable!("this branch is unreachable, looks like a BUG!"),
         }
     }
 }
