@@ -775,7 +775,7 @@ fn random_duration(min_millis: DurationMillis, max_millis: DurationMillis) -> Du
     Duration::from_millis(rng().random_range(min_millis..=max_millis))
 }
 
-fn random_string(len: usize) -> String {
+pub(crate) fn random_string(len: usize) -> String {
     let rand: String = rng().sample_iter(&Alphanumeric).take(len).map(char::from).collect();
     rand
 }
