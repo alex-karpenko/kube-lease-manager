@@ -2,6 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.11.1] - 2026-01-23
+### Details
+#### Fixed
+- Handle inconsistent and empty lease specifications by @nicolas-vivot in [#31](https://github.com/alex-karpenko/kube-lease-manager/pull/31)
+
+## New Contributors
+* @nicolas-vivot made their first contribution in [#31](https://github.com/alex-karpenko/kube-lease-manager/pull/31)
+
+* @alex-karpenko made their first contribution
+
 ## [0.11.0] - 2026-01-17
 ### Details
 #### Breaking changes
@@ -117,6 +127,7 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.11.1]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.11.0..v0.11.1
 [0.11.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.10.0..v0.11.0
 [0.10.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.9.0..v0.10.0
 [0.9.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.8.0..v0.9.0
