@@ -1,4 +1,4 @@
-use crate::{DurationSeconds, LeaseCreateMode, LeaseParams, Result};
+use crate::{DurationSeconds, LeaseCreateMode, LeaseParams, Result, manager::random_string};
 use k8s_openapi::{
     api::coordination::v1::Lease, apimachinery::pkg::apis::meta::v1::MicroTime, jiff::Timestamp, serde::Serialize,
     serde_json,
@@ -57,6 +57,9 @@ pub enum LeaseStateError {
     #[error("inconsistent LeaseManager state detected: {0}")]
     InconsistentState(String),
 }
+
+/// A deterministic prefix for unknown lease holder identity for inconsistent lease specifications.
+const INCONSISTENT_LEASE_HOLDER_IDENTITY_PREFIX: &str = "inconsistent-identity-";
 
 /// Options to use for operations with lock.
 #[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -271,7 +274,30 @@ impl LeaseState {
 
         // Map error is it doesn't exists
         match result {
-            Ok(lease) => Ok(lease),
+            Ok(lease) => match &lease.spec {
+                // Inconsistent spec
+                Some(spec)
+                    if spec.holder_identity.is_none() && (spec.renew_time.is_some() || spec.acquire_time.is_some()) =>
+                {
+                    // Lease is small so cheap to clone
+                    let mut lease = lease.clone();
+                    let mut spec = spec.clone();
+                    // We enforce the missing holder_identity to a deterministic unknown identity
+                    let unknown_identity = format!("{}{}", INCONSISTENT_LEASE_HOLDER_IDENTITY_PREFIX, random_string(6));
+                    spec.holder_identity = Some(unknown_identity);
+                    // We erase renew_time to make it expired automatically
+                    // This logic mainly depends on the `sync` implementation. If
+                    // that changes, this part may need to be updated as well.
+                    spec.renew_time = None;
+                    lease.spec = Some(spec);
+
+                    Ok(lease)
+                }
+                // Consistent spec
+                Some(_) => Ok(lease),
+                // Empty spec
+                None => Ok(lease),
+            },
             Err(kube::Error::Api(err)) if err.code == 404 => {
                 Err(LeaseStateError::NonexistentLease(self.lease_name.clone()))
             }
@@ -332,12 +358,17 @@ impl LeaseState {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
-    use crate::tests::{LeaseDropper, TEST_NAMESPACE, init, sleep_secs};
+    use crate::tests::{LeaseDropper, TEST_NAMESPACE, init, setup_inconsistent_lease, sleep_secs};
     use k8s_openapi::api::coordination::v1::LeaseSpec;
     use kube::api::DeleteParams;
 
-    async fn setup_simple_leaders_vec(lease_name: &str, count: usize) -> (Vec<LeaseParams>, Vec<LeaseState>) {
+    async fn setup_simple_leaders_vec(
+        lease_name: &str,
+        count: usize,
+        create_lease: bool,
+    ) -> (Vec<LeaseParams>, Vec<LeaseState>) {
         const LEASE_DURATION_SECONDS: DurationSeconds = 2;
         const LEASE_GRACE_SECONDS: DurationSeconds = 1;
 
@@ -355,8 +386,9 @@ mod tests {
             states.push(state);
         }
 
-        // Create lease
-        let _ = states[0].create(LeaseCreateMode::CreateNew).await.unwrap();
+        if create_lease {
+            let _ = states[0].create(LeaseCreateMode::CreateNew).await.unwrap();
+        }
 
         (params, states)
     }
@@ -390,11 +422,63 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "uses k8s current-context"]
+    async fn auto_create_with_existing_inconsistent_lease() {
+        const LEASE_NAME: &str = "auto-create-with-existing-inconsistent-lease-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
+        // Creating an inconsistent Lease first
+        setup_inconsistent_lease(LEASE_NAME, Some(MicroTime(Timestamp::now())), None)
+            .await
+            .expect("Inconsistent Lease failed to get created as part of this test preparation. Please fix it.");
+
+        let client = init().await;
+        let state = LeaseState::new(client, LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::Ignore)
+            .await
+            .unwrap();
+
+        let lease = state.create(LeaseCreateMode::AutoCreate).await.unwrap();
+        assert!(lease.spec.is_some());
+        let spec = lease.spec.unwrap();
+        // Expect artificial holder identity and no renew time for immediate expiration
+        assert!(spec.holder_identity.is_some());
+        assert!(spec.renew_time.is_none());
+
+        state.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
+    async fn use_existent_with_existing_inconsistent_lease() {
+        const LEASE_NAME: &str = "use-existent-with-existing-inconsistent-lease-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
+        // Creating an inconsistent Lease first
+        setup_inconsistent_lease(LEASE_NAME, Some(MicroTime(Timestamp::now())), None)
+            .await
+            .expect("Inconsistent Lease failed to get created as part of this test preparation. Please fix it.");
+
+        let client = init().await;
+        let state = LeaseState::new(client, LEASE_NAME, TEST_NAMESPACE, LeaseCreateMode::Ignore)
+            .await
+            .unwrap();
+
+        let lease = state.create(LeaseCreateMode::UseExistent).await.unwrap();
+        assert!(lease.spec.is_some());
+        let spec = lease.spec.unwrap();
+        // Expect artificial holder identity and no renew time for immediate expiration
+        assert!(spec.holder_identity.is_some());
+        assert!(spec.renew_time.is_none());
+
+        state.delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
     async fn simple_soft_lock_soft_release() {
         const LEASE_NAME: &str = "simple-soft-lock-soft-release-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 1).await;
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 1, true).await;
 
         // Lock
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
@@ -423,7 +507,7 @@ mod tests {
         const LEASE_NAME: &str = "soft-lock-1st-soft-release-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, true).await;
 
         // Lock by 1st
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
@@ -478,7 +562,7 @@ mod tests {
         const LEASE_NAME: &str = "soft-lock-1st-force-release-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, true).await;
 
         // Lock by 1st
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
@@ -515,7 +599,7 @@ mod tests {
         const LEASE_NAME: &str = "soft-lock-1st-soft-lock-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, true).await;
 
         // Lock by 1st
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
@@ -570,7 +654,7 @@ mod tests {
         const LEASE_NAME: &str = "unattended-soft-lock-1st-soft-lock-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, true).await;
 
         // Lock by 1st and 2nd
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
@@ -612,7 +696,7 @@ mod tests {
         const LEASE_NAME: &str = "unattended-soft-lock-1st-force-lock-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, true).await;
 
         // Lock by 1st and 2nd
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
@@ -655,7 +739,7 @@ mod tests {
         const LEASE_NAME: &str = "deleted-lease-state-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 1).await;
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 1, true).await;
 
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
         states[0].delete().await.unwrap();
@@ -674,7 +758,7 @@ mod tests {
         const LEASE_NAME: &str = "update-lease-with-conflict-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2).await;
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, true).await;
 
         // Lock lease ordinary
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
@@ -700,5 +784,65 @@ mod tests {
         assert!(matches!(result, Err(LeaseStateError::LockConflict)));
 
         states[0].delete().await.unwrap();
+    }
+
+    #[tokio::test]
+    #[ignore = "uses k8s current-context"]
+    async fn unattended_inconsistent_lease_soft_lock_release() {
+        const LEASE_NAME: &str = "inconsistent-lease-soft-lock-release-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
+        // Different combinations of inconsistent Lease spec
+        let combinations = [
+            (Some(MicroTime(Timestamp::now())), None),
+            (None, Some(MicroTime(Timestamp::now()))),
+            (Some(MicroTime(Timestamp::now())), Some(MicroTime(Timestamp::now()))),
+        ];
+
+        for (renew_time, acquire_time) in combinations {
+            // Creating an inconsistent Lease first
+            setup_inconsistent_lease(LEASE_NAME, renew_time, acquire_time)
+                .await
+                .expect("Inconsistent Lease failed to get created as part of this test preparation. Please fix it.");
+
+            // Initiate the states without creating the Lease again
+            let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, false).await;
+
+            // Lock
+            states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
+            states[1].lock(&params[1], LeaseLockOpts::Soft).await.unwrap();
+
+            // None of the states should think they are holders now since the Lease was inconsistent at first
+            // They must see it as locked and expired
+            assert!(states[0].is_locked());
+            assert!(!states[0].is_holder(&params[0].identity));
+            assert!(states[0].is_expired());
+
+            assert!(states[1].is_locked());
+            assert!(!states[1].is_holder(&params[1].identity));
+            assert!(states[1].is_expired());
+
+            // Release
+            states[0].release(&params[0], LeaseLockOpts::Soft).await.unwrap();
+            assert!(!states[0].is_locked());
+            assert!(!states[0].is_holder(&params[0].identity));
+            assert!(states[0].is_expired());
+
+            // Lock again
+            states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
+            states[1].lock(&params[1], LeaseLockOpts::Soft).await.unwrap();
+
+            // State 0 should be the holder now
+            assert!(states[0].is_locked());
+            assert!(states[0].is_holder(&params[0].identity));
+            assert!(!states[0].is_expired());
+
+            assert!(states[1].is_locked());
+            assert!(!states[1].is_holder(&params[1].identity));
+            assert!(!states[1].is_expired());
+
+            // Clean up the lease before next iteration
+            states[0].delete().await.unwrap();
+        }
     }
 }
