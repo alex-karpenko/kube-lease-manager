@@ -255,7 +255,6 @@ impl LeaseState {
 
         let params = PatchParams {
             field_manager: Some(params.field_manager()),
-            // force: matches!(patch, Patch::Apply(_)),
             ..Default::default()
         };
 

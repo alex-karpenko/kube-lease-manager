@@ -77,10 +77,9 @@
 //! * _field_manager_:
 //!   identifier of the Kubernetes [field manager](https://kubernetes.io/docs/reference/using-api/server-side-apply/#managers)
 //!   to authorize changes of the Lease resources.
-//!   It should be unique among other managers.
-//!   Usually you don't need to specify it explicitly because of LeaseParams generates it concatenating crates'
-//!   name (kube-lease-manager) and `identity` string.
-//!   But it's possible to specify field manger directly via the `LeaseParams`
+//!   Usually it reflects application's (controller, product, etc.) name.
+//!   Default value is a name of the crate ("kube-lease-manager"). It's not mandatory,
+//!   but recommended to specify field manger name explicitly via the `LeaseParams`
 //!   [with_field_manager()](LeaseParams::with_field_manager) method or using [`LeaseManagerBuilder`].
 //!
 //! The next config option is a [`LeaseCreateMode`]
