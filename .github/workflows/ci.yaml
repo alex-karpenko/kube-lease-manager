@@ -50,12 +50,8 @@ jobs:
       - name: Light tests
         run: cargo test --all
 
-      - uses: nolar/setup-k3d-k3s@v1
-        with:
-          version: ${{matrix.k8s}}
-          k3d-name: kube
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
-
       - name: Heavy tests
-        run: cargo test --all -- --ignored
+        env:
+          CARGO_TEST_KUBE_VERSION: ${{ matrix.k8s }}
+          DISABLE_CONTAINER_DESTRUCTORS: "true"
+        run: cargo test --all -- --include-ignored

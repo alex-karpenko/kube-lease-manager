@@ -23,9 +23,11 @@ tracing = { version = "0.1.40", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 anyhow = "1.0.93"
+dtor = "1.0.4"
 futures = { version = "0.3.31", default-features = false, features = ["async-await"] }
 kube = { version = "3.0.0", default-features = false, features = ["rustls-tls", "runtime"] }
-rustls = { version = "0.23.23" }
+rustls = { version = "0.23.23", features = ["ring"] }
+testcontainers = { version = "0.27.3", default-features = false }
 tokio = { version = "1.38.2", default-features = false, features = ["rt-multi-thread"] }
 tracing-subscriber = { version = "0.3.20" }
 uuid = { version = "1.10.0", features = ["v4"] }

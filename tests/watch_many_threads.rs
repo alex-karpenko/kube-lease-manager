@@ -11,6 +11,8 @@
 ///
 /// The requirement is that a channel contains a correct sequence of events.
 ///
+mod common;
+
 use std::{
     sync::mpsc::{self, Sender},
     thread,
@@ -40,15 +42,26 @@ enum Event {
 }
 
 #[test]
-#[ignore = "uses k8s current-context"]
+#[ignore = "needs docker"]
 fn watch_many_threads() -> Result<()> {
     tracing_subscriber::fmt::init();
+
+    // Start the K3s cluster and extract kubeconfig YAML before spawning threads.
+    // Each thread gets its own client from the YAML so it works with its own tokio Runtime.
+    let kubeconfig_yaml = {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        rt.block_on(common::get_kubeconfig_yaml()).unwrap()
+    };
 
     let (tx, rx) = mpsc::channel::<Event>();
     let tasks: Vec<_> = (0..TEST_THREADS)
         .map(move |index| {
             let tx = tx.clone();
-            thread::spawn(move || run_watch_tread(index, tx))
+            let yaml = kubeconfig_yaml.clone();
+            thread::spawn(move || run_watch_tread(index, tx, yaml))
         })
         .collect();
 
@@ -83,7 +96,7 @@ fn watch_many_threads() -> Result<()> {
     Ok(())
 }
 
-fn run_watch_tread(index: usize, tx: Sender<Event>) -> Result<()> {
+fn run_watch_tread(index: usize, tx: Sender<Event>, kubeconfig_yaml: String) -> Result<()> {
     debug!(%index, "Starting");
 
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -92,7 +105,9 @@ fn run_watch_tread(index: usize, tx: Sender<Event>) -> Result<()> {
         .unwrap();
 
     rt.block_on(async move {
-        let client = Client::try_default().await.unwrap();
+        let client = common::k3s::create_client_from_kubeconfig_yaml(&kubeconfig_yaml)
+            .await
+            .unwrap();
         create_namespace(client.clone(), TEST_NAMESPACE).await.unwrap();
 
         let manager = LeaseManagerBuilder::new(client, TEST_LEASE_NAME)
@@ -144,7 +159,6 @@ fn run_watch_tread(index: usize, tx: Sender<Event>) -> Result<()> {
 }
 
 async fn create_namespace(client: Client, namespace: &str) -> Result<()> {
-    // Create namespace
     let pp = PostParams::default();
     let mut data = Namespace::default();
     data.meta_mut().name = Some(String::from(namespace));
