@@ -669,7 +669,8 @@ impl LeaseManager {
                     backoff.reset();
                 }
                 Err(LeaseStateError::LockConflict) => {
-                    // Wait for a backoff interval and continue.
+                    // Force-sync to refresh resourceVersion before the next attempt.
+                    let _ = self.state.write().await.sync(LeaseLockOpts::Force).await;
                     backoff.sleep().await;
                 }
                 Err(err) => return Err(LeaseManagerError::from(err)),
@@ -1487,7 +1488,8 @@ pub(crate) mod tests {
         // assert that at least one watcher gets changed, and only one holds the lock
         sleep_secs(3).await;
         let changed_vec: Vec<_> = channels.iter_mut().map(|ch| Box::pin(ch.changed())).collect();
-        let (_result, _index, _) = select_all(changed_vec).await;
+        let (_result, index, _) = select_all(changed_vec).await;
+        assert!(*channels[index].borrow_and_update());
         assert_eq!(
             channels
                 .iter_mut()
@@ -1499,8 +1501,8 @@ pub(crate) mod tests {
 
         // drop watchers one by one and assert that single lock only
         let mut managers = vec![];
+        let mut holder_index = index;
         while !channels.is_empty() {
-            let holder_index = channels.iter().position(|ch| *ch.borrow()).unwrap();
             let holder_channel = channels.remove(holder_index);
             let holder_handler = handlers.remove(holder_index);
             drop(holder_channel);
@@ -1510,7 +1512,8 @@ pub(crate) mod tests {
             if !channels.is_empty() {
                 // wait for new lock
                 let changed_vec: Vec<_> = channels.iter_mut().map(|ch| Box::pin(ch.changed())).collect();
-                let (_result, _index, _) = select_all(changed_vec).await;
+                let (_result, index, _) = select_all(changed_vec).await;
+                assert!(*channels[index].borrow_and_update());
 
                 assert_eq!(
                     channels
@@ -1520,8 +1523,26 @@ pub(crate) mod tests {
                         .count(),
                     1
                 );
+
+                holder_index = index;
             }
         }
+
+        // assert the expected number of the lease transitions
+        assert_eq!(
+            managers[0]
+                .state
+                .read()
+                .await
+                .get()
+                .await
+                .unwrap()
+                .spec
+                .unwrap()
+                .lease_transitions
+                .unwrap(),
+            NUMBER_OF_MANAGERS as i32
+        );
 
         // Clean up
         managers[0].state.read().await.delete().await.unwrap();
