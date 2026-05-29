@@ -87,8 +87,7 @@ impl K3s {
                 .into_iter()
                 .map(|(k, v)| (k, v.to_string()))
                 .collect::<HashMap<&str, String>>();
-            let version =
-                std::env::var(KUBE_VERSION_ENV_VAR).unwrap_or(KUBE_VERSION_DEFAULT.to_string());
+            let version = std::env::var(KUBE_VERSION_ENV_VAR).unwrap_or(KUBE_VERSION_DEFAULT.to_string());
             let version = version.strip_prefix("v").unwrap_or(&version);
             let version = if version.is_empty() || version == "latest" {
                 KUBE_VERSION_DEFAULT
@@ -131,15 +130,12 @@ impl K3s {
             }
         });
 
-        let client_config =
-            Config::from_custom_kubeconfig(config, &KubeConfigOptions::default()).await?;
+        let client_config = Config::from_custom_kubeconfig(config, &KubeConfigOptions::default()).await?;
 
         Ok(kube::Client::try_from(client_config)?)
     }
 
-    pub async fn get_kubeconfig_yaml_with_port(
-        container: &ContainerAsync<K3s>,
-    ) -> anyhow::Result<String> {
+    pub async fn get_kubeconfig_yaml_with_port(container: &ContainerAsync<K3s>) -> anyhow::Result<String> {
         let conf_yaml = container.image().get_kubeconfig().await?;
         let port = container.get_host_port_ipv4(K3S_API_PORT).await?;
         Ok(conf_yaml.replace("https://127.0.0.1:6443", &format!("https://127.0.0.1:{port}")))
@@ -154,8 +150,7 @@ pub async fn create_client_from_kubeconfig_yaml(yaml: &str) -> anyhow::Result<ku
     }
 
     let config = Kubeconfig::from_yaml(yaml).expect("Error loading kube config");
-    let client_config =
-        Config::from_custom_kubeconfig(config, &KubeConfigOptions::default()).await?;
+    let client_config = Config::from_custom_kubeconfig(config, &KubeConfigOptions::default()).await?;
 
     Ok(kube::Client::try_from(client_config)?)
 }

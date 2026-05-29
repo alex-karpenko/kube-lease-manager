@@ -785,11 +785,7 @@ mod tests {
     use super::*;
     use crate::tests::{LeaseDropper, TEST_NAMESPACE, init, setup_inconsistent_lease, sleep_secs};
     use futures::future::select_all;
-    use k8s_openapi::{
-        api::coordination::v1::Lease,
-        apimachinery::pkg::apis::meta::v1::MicroTime,
-        jiff::Timestamp,
-    };
+    use k8s_openapi::{api::coordination::v1::Lease, apimachinery::pkg::apis::meta::v1::MicroTime, jiff::Timestamp};
     use kube::{Api, api::DeleteParams};
     use std::collections::HashSet;
     use tokio::{join, select};

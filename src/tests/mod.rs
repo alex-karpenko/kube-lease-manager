@@ -1,8 +1,8 @@
 #[path = "../../tests/common/k3s.rs"]
 mod k3s;
 
-use k3s::K3s;
 use dtor::dtor;
+use k3s::K3s;
 use k8s_openapi::{
     api::{
         coordination::v1::{Lease, LeaseSpec},
