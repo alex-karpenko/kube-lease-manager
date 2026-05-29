@@ -54,4 +54,4 @@ jobs:
         env:
           CARGO_TEST_KUBE_VERSION: ${{ matrix.k8s }}
           DISABLE_CONTAINER_DESTRUCTORS: "true"
-        run: cargo test --all -- --include-ignored
+        run: cargo test --all -- --ignored
