@@ -413,7 +413,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn rough_create_delete() {
         const LEASE_NAME: &str = "rough-create-delete-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -431,7 +431,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn auto_create_with_existing_inconsistent_lease() {
         const LEASE_NAME: &str = "auto-create-with-existing-inconsistent-lease-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -457,7 +457,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn use_existent_with_existing_inconsistent_lease() {
         const LEASE_NAME: &str = "use-existent-with-existing-inconsistent-lease-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -483,7 +483,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn simple_soft_lock_soft_release() {
         const LEASE_NAME: &str = "simple-soft-lock-soft-release-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -512,7 +512,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn soft_lock_1st_soft_release_2nd() {
         const LEASE_NAME: &str = "soft-lock-1st-soft-release-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -567,7 +567,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn soft_lock_1st_force_release_2nd() {
         const LEASE_NAME: &str = "soft-lock-1st-force-release-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -604,7 +604,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn soft_lock_1st_soft_lock_2nd() {
         const LEASE_NAME: &str = "soft-lock-1st-soft-lock-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -659,7 +659,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn unattended_soft_lock_1st_soft_lock_2nd() {
         const LEASE_NAME: &str = "unattended-soft-lock-1st-soft-lock-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -701,7 +701,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn unattended_soft_lock_1st_force_lock_2nd() {
         const LEASE_NAME: &str = "unattended-soft-lock-1st-force-lock-2nd-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -744,7 +744,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn deleted_lease_state() {
         const LEASE_NAME: &str = "deleted-lease-state-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -763,7 +763,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn update_lease_with_conflict() {
         const LEASE_NAME: &str = "update-lease-with-conflict-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
@@ -804,7 +804,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "uses k8s current-context"]
+    #[ignore = "needs docker"]
     async fn unattended_inconsistent_lease_soft_lock_release() {
         const LEASE_NAME: &str = "inconsistent-lease-soft-lock-release-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);

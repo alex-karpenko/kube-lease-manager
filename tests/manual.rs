@@ -1,14 +1,14 @@
-use kube::Client;
+mod common;
+
 use kube_lease_manager::{LeaseManagerBuilder, Result};
 use std::time::Duration;
 
 #[tokio::test]
-#[ignore = "uses k8s current-context"]
+#[ignore = "needs docker"]
 async fn manual() -> Result<()> {
-    // Use the default Kube client
-    let client = Client::try_default().await?;
+    let client = common::get_test_kube_client().await.unwrap();
     // Create the simplest LeaseManager with reasonable defaults using a convenient builder.
-    // It uses a Lease resource called `test-watch-lease`.
+    // It uses a Lease resource called `test-manual-lease`.
     let manager = LeaseManagerBuilder::new(client, "test-manual-lease").build().await?;
 
     // Try to get a lock on resource

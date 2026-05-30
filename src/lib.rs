@@ -172,3 +172,6 @@ mod state;
 
 pub use error::*;
 pub use manager::*;
+
+#[cfg(test)]
+pub(crate) mod tests;
