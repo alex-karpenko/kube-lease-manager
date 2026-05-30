@@ -81,7 +81,7 @@ impl LeaseState {
     ) -> Result<Self, LeaseStateError> {
         let api = Api::<Lease>::namespaced(client, namespace);
 
-        let mut state = Self {
+        let state = Self {
             api,
             lease_name: lease_name.into(),
             holder: None,
@@ -90,8 +90,7 @@ impl LeaseState {
             resource_version: None,
         };
 
-        let lease = state.create(create_mode).await?;
-        state.update_state(lease);
+        state.create(create_mode).await?;
         Ok(state)
     }
 
@@ -114,35 +113,6 @@ impl LeaseState {
         self.holder.is_some()
     }
 
-    /// Helper to update state fields from a Lease resource.
-    fn update_state(&mut self, lease: Lease) {
-        self.resource_version = lease.metadata.resource_version.clone();
-
-        if let Some(spec) = lease.spec {
-            self.holder = spec.holder_identity;
-            self.transitions = spec.lease_transitions.unwrap_or(0);
-            self.expiry = {
-                let renew = spec.renew_time;
-                let duration = spec
-                    .lease_duration_seconds
-                    .map(|d| Duration::from_secs(d as DurationSeconds));
-
-                if let (Some(renew), Some(duration)) = (renew, duration) {
-                    let renew: SystemTime = renew.0.into();
-                    renew.checked_add(duration).unwrap()
-                } else {
-                    SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
-                }
-            };
-        } else {
-            // Empty spec in the Lease
-            debug!(lease = %self.lease_name, "lease `spec` field is empty");
-            self.holder = None;
-            self.transitions = 0;
-            self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
-        }
-    }
-
     /// Retrieve the actual state from the cluster.
     pub(crate) async fn sync(&mut self, opts: LeaseLockOpts) -> Result<(), LeaseStateError> {
         if opts == LeaseLockOpts::Force || self.is_expired() {
@@ -161,7 +131,32 @@ impl LeaseState {
             }
 
             let lease = result?;
-            self.update_state(lease);
+            // Always capture the latest resourceVersion for OCC patches.
+            self.resource_version = lease.metadata.resource_version.clone();
+
+            if let Some(spec) = lease.spec {
+                self.holder = spec.holder_identity;
+                self.transitions = spec.lease_transitions.unwrap_or(0);
+                self.expiry = {
+                    let renew = spec.renew_time;
+                    let duration = spec
+                        .lease_duration_seconds
+                        .map(|d| Duration::from_secs(d as DurationSeconds));
+
+                    if let (Some(renew), Some(duration)) = (renew, duration) {
+                        let renew: SystemTime = renew.0.into();
+                        renew.checked_add(duration).unwrap()
+                    } else {
+                        SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap()
+                    }
+                };
+            } else {
+                // Empty spec in the Lease
+                debug!(lease = %self.lease_name, "lease `spec` field is empty");
+                self.holder = None;
+                self.transitions = 0;
+                self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+            }
         }
 
         Ok(())
