@@ -26,8 +26,8 @@ Some of the typical use cases:
   This is a convenient wrapper around a Kubernetes `Lease` resource to manage all aspects of a leader election process.
 * Provides two different high-level approaches to lock and release lease:
   fully automated or partially manual lock control.
-* Uses [Server-Side-Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
-  approach to update lease state that facilitates conflict detection and resolution
+* Uses `resourceVersion`-based Optimistic Concurrency Control (OCC)
+  approach for conflict detection on lease state update. That facilitates conflict detection and resolution
   and makes impossible concurrent locking.
 * Tolerates configurable time skew between nodes of the Kubernetes cluster.
 * Behavioral parameters of the lease manager are easily and flexibly configurable.

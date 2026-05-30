@@ -64,6 +64,7 @@ const WATCHER_BACKOFF_MULT: DurationFloat = 2.0;
 /// * _field_manager_:
 ///   identifier of the Kubernetes [field manager](https://kubernetes.io/docs/reference/using-api/server-side-apply/#managers)
 ///   to authorize changes of the Lease resources.
+///   Actually, with OCC approach field manager name has no effect on conflict resolution.
 ///   Usually it reflects application's (controller, product, etc.) name.
 ///   Default value is a name of the crate ("kube-lease-manager"). It's not mandatory
 ///   but recommended to specify field manger explicitly via the `LeaseParams`

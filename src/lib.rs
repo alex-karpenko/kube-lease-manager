@@ -17,8 +17,8 @@
 //!   resource to manage all aspects of a leader election process.
 //! * Provides two different high-level approaches to lock and release lease:
 //!   fully automated or partially manual lock control.
-//! * Uses [Server-Side-Apply](https://kubernetes.io/docs/reference/using-api/server-side-apply/)
-//!   approach to update lease state that facilitates conflict detection and resolution
+//! * Uses `resourceVersion`-based Optimistic Concurrency Control (OCC)
+//!   approach for conflict detection on lease state update. That facilitates conflict detection and resolution
 //!   and makes impossible concurrent locking.
 //! * Tolerate configurable time skew between nodes of the Kubernetes cluster.
 //! * Behavioral parameters of the lease manager are easily and flexibly configurable.
@@ -77,6 +77,7 @@
 //! * _field_manager_:
 //!   identifier of the Kubernetes [field manager](https://kubernetes.io/docs/reference/using-api/server-side-apply/#managers)
 //!   to authorize changes of the Lease resources.
+//!   Actually, with OCC approach field manager name has no effect on conflict resolution.
 //!   Usually it reflects application's (controller, product, etc.) name.
 //!   Default value is a name of the crate ("kube-lease-manager"). It's not mandatory,
 //!   but recommended to specify field manger name explicitly via the `LeaseParams`

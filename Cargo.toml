@@ -10,7 +10,7 @@ keywords = ["kubernetes", "async", "lease", "leader", "election"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/alex-karpenko/kube-lease-manager"
-version = "0.11.2"
+version = "0.12.0"
 exclude = [
     ".github/**",
     ".vscode/**",
