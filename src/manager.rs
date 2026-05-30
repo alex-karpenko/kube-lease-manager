@@ -701,7 +701,12 @@ impl LeaseManager {
             // If we matched directly on `self.state.write().await.release(...)`, Rust would keep
             // the temporary guard alive for the entire match expression, deadlocking when the
             // LockConflict arm tries to reacquire the same write lock.
-            let result = self.state.write().await.release(&self.params, LeaseLockOpts::Soft).await;
+            let result = self
+                .state
+                .write()
+                .await
+                .release(&self.params, LeaseLockOpts::Soft)
+                .await;
             match result {
                 Ok(()) => return Ok(()),
                 Err(LeaseStateError::LockConflict) => {
@@ -1588,13 +1593,7 @@ mod tests {
         assert!(result.is_ok(), "release() returned an error: {result:?}");
 
         // B still holds the lock.
-        manager_b
-            .state
-            .write()
-            .await
-            .sync(LeaseLockOpts::Force)
-            .await
-            .unwrap();
+        manager_b.state.write().await.sync(LeaseLockOpts::Force).await.unwrap();
         assert!(manager_b.is_holder().await);
 
         manager_b.state.read().await.delete().await.unwrap();
@@ -1627,17 +1626,14 @@ mod tests {
         // PATCH inside state::release(), B may update the lease, causing a 409.
         // The retry loop must catch LockConflict, re-sync, find A is no longer the
         // holder, and return Ok(()) instead of hitting unreachable!().
-        let (result_a, result_b) = tokio::join!(
-            manager_a.release(),
-            async {
-                manager_b
-                    .state
-                    .write()
-                    .await
-                    .lock(&manager_b.params, LeaseLockOpts::Force)
-                    .await
-            }
-        );
+        let (result_a, result_b) = tokio::join!(manager_a.release(), async {
+            manager_b
+                .state
+                .write()
+                .await
+                .lock(&manager_b.params, LeaseLockOpts::Force)
+                .await
+        });
 
         assert!(result_a.is_ok(), "release() returned an error: {result_a:?}");
         assert!(result_b.is_ok(), "force-lock returned an error: {result_b:?}");
