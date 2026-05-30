@@ -1626,14 +1626,20 @@ mod tests {
         // PATCH inside state::release(), B may update the lease, causing a 409.
         // The retry loop must catch LockConflict, re-sync, find A is no longer the
         // holder, and return Ok(()) instead of hitting unreachable!().
-        let (result_a, result_b) = tokio::join!(manager_a.release(), async {
-            manager_b
-                .state
-                .write()
-                .await
-                .lock(&manager_b.params, LeaseLockOpts::Force)
-                .await
-        });
+        let (result_a, result_b) = tokio::join!(
+            async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                manager_a.release().await
+            },
+            async {
+                manager_b
+                    .state
+                    .write()
+                    .await
+                    .lock(&manager_b.params, LeaseLockOpts::Force)
+                    .await
+            }
+        );
 
         assert!(result_a.is_ok(), "release() returned an error: {result_a:?}");
         assert!(result_b.is_ok(), "force-lock returned an error: {result_b:?}");
