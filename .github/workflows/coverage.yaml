@@ -25,16 +25,11 @@ jobs:
           rustup override set nightly
 
       - uses: Swatinem/rust-cache@v2
-      - uses: nolar/setup-k3d-k3s@v1
-        with:
-          version: latest
-          k3d-name: kube
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          k3d-args: "--no-lb --no-rollback --k3s-arg --disable=traefik,servicelb,metrics-server@server:*"
 
       - name: Test
         env:
           CI: true
+          DISABLE_CONTAINER_DESTRUCTORS: "true"
           RUSTFLAGS: -Cinstrument-coverage
           LLVM_PROFILE_FILE: kube-lease-manager-%p-%m.profraw
           RUST_LOG: kube_lease_manager=debug
