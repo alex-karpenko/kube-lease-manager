@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub mod k3s;
 
 use dtor::dtor;
@@ -15,12 +13,14 @@ const DISABLE_CONTAINER_DESTRUCTORS_ENV_NAME: &str = "DISABLE_CONTAINER_DESTRUCT
 
 static K3S_CLUSTER_CONTAINER: OnceCell<RwLock<Option<ContainerAsync<K3s>>>> = OnceCell::const_new();
 
+#[allow(dead_code)] // actually it's not dead
 pub async fn get_test_kube_client() -> anyhow::Result<kube::Client> {
     let guard = get_k3s_cluster().await.read().await;
     let cluster = guard.as_ref().unwrap();
     K3s::get_client(cluster).await
 }
 
+#[allow(dead_code)] // actually it's not dead
 pub async fn get_kubeconfig_yaml() -> anyhow::Result<String> {
     let guard = get_k3s_cluster().await.read().await;
     let cluster = guard.as_ref().unwrap();

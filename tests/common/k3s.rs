@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use kube::{
     Config,
     config::{KubeConfigOptions, Kubeconfig},
@@ -135,6 +133,7 @@ impl K3s {
         Ok(kube::Client::try_from(client_config)?)
     }
 
+    #[allow(dead_code)] // actually it's not dead
     pub async fn get_kubeconfig_yaml_with_port(container: &ContainerAsync<K3s>) -> anyhow::Result<String> {
         let conf_yaml = container.image().get_kubeconfig().await?;
         let port = container.get_host_port_ipv4(K3S_API_PORT).await?;
@@ -142,6 +141,7 @@ impl K3s {
     }
 }
 
+#[allow(dead_code)] // actually it's not dead
 pub async fn create_client_from_kubeconfig_yaml(yaml: &str) -> anyhow::Result<kube::Client> {
     if CryptoProvider::get_default().is_none() {
         rustls::crypto::ring::default_provider()
