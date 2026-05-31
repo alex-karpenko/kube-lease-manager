@@ -765,7 +765,9 @@ impl LeaseManager {
             // Use `let else` rather than unwrap: is_locked() and holder() acquire the
             // read lock in separate async steps, so a concurrent release between the
             // two reads could legitimately return None here.
-            let Some(holder) = self.holder().await else { return Ok(()); };
+            let Some(holder) = self.holder().await else {
+                return Ok(());
+            };
             debug!(identity = %self.params.identity, %holder,"lease is actually locked by other identity");
             tokio::time::sleep(self.grace_sleep_duration(self.expiry().await, 0)).await;
             Ok(())

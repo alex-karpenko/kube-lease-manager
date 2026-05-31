@@ -767,7 +767,10 @@ mod tests {
         assert!(states[0].holder.is_none());
         assert_eq!(states[0].transitions, 0);
         assert!(states[0].is_expired());
-        assert!(states[0].resource_version.is_none(), "resource_version must be cleared after NonexistentLease");
+        assert!(
+            states[0].resource_version.is_none(),
+            "resource_version must be cleared after NonexistentLease"
+        );
     }
 
     #[tokio::test]
@@ -829,7 +832,10 @@ mod tests {
         // Both states observe the same resourceVersion for the orphaned lease.
         states[0].sync(LeaseLockOpts::Force).await.unwrap();
         states[1].sync(LeaseLockOpts::Force).await.unwrap();
-        assert_eq!(states[0].resource_version, states[1].resource_version, "both must start with the same RV");
+        assert_eq!(
+            states[0].resource_version, states[1].resource_version,
+            "both must start with the same RV"
+        );
         assert!(!states[0].is_locked());
         assert!(!states[1].is_locked());
 
