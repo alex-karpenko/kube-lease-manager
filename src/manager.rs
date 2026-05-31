@@ -1639,12 +1639,26 @@ mod tests {
                 manager_a.release().await
             },
             async {
-                manager_b
-                    .state
-                    .write()
-                    .await
-                    .lock(&manager_b.params, LeaseLockOpts::Force)
-                    .await
+                let mut backoff = BackoffSleep::new(
+                    MIN_CONFLICT_BACKOFF_TIME,
+                    MAX_CONFLICT_BACKOFF_TIME,
+                    CONFLICT_BACKOFF_MULT,
+                );
+                loop {
+                    let res = manager_b
+                        .state
+                        .write()
+                        .await
+                        .lock(&manager_b.params, LeaseLockOpts::Force)
+                        .await;
+                    match res {
+                        Ok(()) => return Ok(()),
+                        Err(LeaseStateError::LockConflict) => {
+                            backoff.sleep().await;
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
             }
         );
 
