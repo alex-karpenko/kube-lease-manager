@@ -740,13 +740,16 @@ impl LeaseManager {
             self.state.write().await.lock(&self.params, LeaseLockOpts::Soft).await
         } else if self.is_locked().await && self.is_expired().await {
             // It's locked by someone else but lock is already expired.
-            // Release it by force and try to lock on the next loop cycle
+            // Use Soft so that state::release() re-checks expiry after its
+            // mandatory force-sync: if another manager won the OCC race and
+            // acquired a fresh lock between our local check and the sync,
+            // we skip the patch instead of stealing the valid lock.
             debug!(identity = %self.params.identity, "release expired lease lock");
             let res = self
                 .state
                 .write()
                 .await
-                .release(&self.params, LeaseLockOpts::Force)
+                .release(&self.params, LeaseLockOpts::Soft)
                 .await;
 
             // Sleep some random time (up to 1000 ms) to minimize collision probability
