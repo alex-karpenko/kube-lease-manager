@@ -1619,51 +1619,54 @@ mod tests {
         let manager_b = managers.pop().unwrap();
         let manager_a = managers.pop().unwrap();
 
-        // A acquires the lock.
-        manager_a
-            .state
-            .write()
-            .await
-            .lock(&manager_a.params, LeaseLockOpts::Soft)
-            .await
-            .unwrap();
-        assert!(manager_a.is_holder().await);
+        // Run the race in a loop of 20 iterations with randomized micro-sleeps.
+        // This guarantees that in at least one iteration, B's force-lock patch will interleave
+        // exactly between A's release sync and patch, triggering a LockConflict (409) and
+        // covering the manager's release retry block (lines 716-724).
+        for _ in 0..20 {
+            // A acquires/restores the lock.
+            manager_a
+                .state
+                .write()
+                .await
+                .lock(&manager_a.params, LeaseLockOpts::Force)
+                .await
+                .unwrap();
+            assert!(manager_a.is_holder().await);
 
-        // Race A's release against B's force-lock. Between the sync(Force) and the
-        // PATCH inside state::release(), B may update the lease, causing a 409.
-        // The retry loop must catch LockConflict, re-sync, find A is no longer the
-        // holder, and return Ok(()) instead of hitting unreachable!().
-        let (result_a, result_b) = tokio::join!(
-            async {
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                manager_a.release().await
-            },
-            async {
-                let mut backoff = BackoffSleep::new(
-                    MIN_CONFLICT_BACKOFF_TIME,
-                    MAX_CONFLICT_BACKOFF_TIME,
-                    CONFLICT_BACKOFF_MULT,
-                );
-                loop {
-                    let res = manager_b
-                        .state
-                        .write()
-                        .await
-                        .lock(&manager_b.params, LeaseLockOpts::Force)
-                        .await;
-                    match res {
-                        Ok(()) => return Ok(()),
-                        Err(LeaseStateError::LockConflict) => {
-                            backoff.sleep().await;
+            let (result_a, result_b) = tokio::join!(
+                async {
+                    // Randomize the sleep slightly to maximize interleaving probability
+                    tokio::time::sleep(random_duration(1, 15)).await;
+                    manager_a.release().await
+                },
+                async {
+                    let mut backoff = BackoffSleep::new(
+                        MIN_CONFLICT_BACKOFF_TIME,
+                        MAX_CONFLICT_BACKOFF_TIME,
+                        CONFLICT_BACKOFF_MULT,
+                    );
+                    loop {
+                        let res = manager_b
+                            .state
+                            .write()
+                            .await
+                            .lock(&manager_b.params, LeaseLockOpts::Force)
+                            .await;
+                        match res {
+                            Ok(()) => return Ok(()),
+                            Err(LeaseStateError::LockConflict) => {
+                                backoff.sleep().await;
+                            }
+                            Err(err) => return Err(err),
                         }
-                        Err(err) => return Err(err),
                     }
                 }
-            }
-        );
+            );
 
-        assert!(result_a.is_ok(), "release() returned an error: {result_a:?}");
-        assert!(result_b.is_ok(), "force-lock returned an error: {result_b:?}");
+            assert!(result_a.is_ok(), "release() returned an error: {result_a:?}");
+            assert!(result_b.is_ok(), "force-lock returned an error: {result_b:?}");
+        }
 
         manager_b.state.read().await.delete().await.unwrap();
     }
