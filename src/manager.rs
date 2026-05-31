@@ -11,7 +11,7 @@ use std::{
     time::{Duration, SystemTime},
 };
 use tokio::{select, sync::RwLock, task::JoinHandle};
-use tracing::{debug, error, trace};
+use tracing::{debug, error, trace, warn};
 
 type DurationMillis = u64;
 
@@ -408,7 +408,7 @@ impl Default for LeaseParams {
 ///     let manager = LeaseManagerBuilder::new(client, "existing-test-lease")
 ///         .with_namespace("lease-manager-test-ns")
 ///         .with_create_mode(LeaseCreateMode::UseExistent)
-///         .with_field_manager(format!("custom-field-manager"))
+///         .with_field_manager("custom-field-manager")
 ///         .with_identity(identity)
 ///         .with_duration(128)
 ///         .with_grace(16)
@@ -671,7 +671,9 @@ impl LeaseManager {
                 }
                 Err(LeaseStateError::LockConflict) => {
                     // Force-sync to refresh resourceVersion before the next attempt.
-                    let _ = self.state.write().await.sync(LeaseLockOpts::Force).await;
+                    if let Err(e) = self.state.write().await.sync(LeaseLockOpts::Force).await {
+                        warn!(identity = %self.params.identity, error = ?e, "force-sync after lock conflict failed, retrying with stale state");
+                    }
                     backoff.sleep().await;
                 }
                 Err(err) => return Err(LeaseManagerError::from(err)),
@@ -714,7 +716,9 @@ impl LeaseManager {
                     // pre-release sync and the patch. Re-sync to see the current holder: if we
                     // are no longer the holder, the release goal is already achieved.
                     let mut state = self.state.write().await;
-                    let _ = state.sync(LeaseLockOpts::Force).await;
+                    if let Err(e) = state.sync(LeaseLockOpts::Force).await {
+                        warn!(identity = %self.params.identity, error = ?e, "force-sync after release conflict failed");
+                    }
                     if !state.is_holder(&self.params.identity) {
                         return Ok(());
                     }
@@ -758,7 +762,10 @@ impl LeaseManager {
         } else if self.is_locked().await {
             // It's locked by someone else, and the lock is actual.
             // Sleep up to the expiration time of the lock.
-            let holder = self.holder().await.unwrap();
+            // Use `let else` rather than unwrap: is_locked() and holder() acquire the
+            // read lock in separate async steps, so a concurrent release between the
+            // two reads could legitimately return None here.
+            let Some(holder) = self.holder().await else { return Ok(()); };
             debug!(identity = %self.params.identity, %holder,"lease is actually locked by other identity");
             tokio::time::sleep(self.grace_sleep_duration(self.expiry().await, 0)).await;
             Ok(())
@@ -1465,6 +1472,27 @@ mod tests {
         managers[0].state.read().await.delete().await.unwrap();
     }
 
+    /// Verifies the shared-field-manager contract introduced with the OCC rewrite.
+    ///
+    /// With the old SSA approach each manager needed a unique field_manager so K8s could
+    /// assign field ownership per writer. With Merge+OCC the field_manager is audit metadata
+    /// only — conflict detection is handled exclusively by resourceVersion. All managers
+    /// therefore share the same default, which simplifies configuration and avoids spurious
+    /// SSA conflicts when the same application runs multiple replicas.
+    #[test]
+    fn default_field_manager_is_shared_crate_name() {
+        let params1 = LeaseParams::new("identity-1", 5, 2);
+        let params2 = LeaseParams::new("identity-2", 5, 2);
+
+        assert_eq!(params1.field_manager(), env!("CARGO_PKG_NAME"));
+        assert_eq!(params2.field_manager(), env!("CARGO_PKG_NAME"));
+        assert_eq!(
+            params1.field_manager(),
+            params2.field_manager(),
+            "all managers share the same default field_manager; uniqueness is not required with OCC"
+        );
+    }
+
     #[test]
     fn lease_params_constructor_with_field_manager() {
         const CUSTOM_FIELD_MANAGER: &str = "custom-field-manager";
@@ -1558,16 +1586,16 @@ mod tests {
     // The concurrent test gives probabilistic coverage of the actual 409 path.
     // -----------------------------------------------------------------------
 
-    /// Deterministic: A holds the lock; after a simulated conflict re-sync shows B
-    /// is now the holder, so release() must return Ok(()).
+    /// A holds the lock. B force-steals it before A calls release(). A's release(Soft)
+    /// does sync(Force) as its first step, sees B as the holder, and skips the patch
+    /// entirely — returning Ok(()) without touching B's lock.
     ///
-    /// This exercises the `!state.is_holder(...)` early-return inside the
-    /// LockConflict arm of the retry loop, using a sequential setup instead of a
-    /// real 409 (which requires a network-level race and cannot be injected without
-    /// mocking).
+    /// This exercises the "pre-patch sync reveals we are not the holder" path inside
+    /// state::release(). The LockConflict retry loop in manager::release() is covered
+    /// by `release_does_not_panic_when_lock_stolen_concurrently`.
     #[tokio::test]
     #[ignore = "needs docker"]
-    async fn release_returns_ok_when_holder_lost_after_conflict_resync() {
+    async fn release_is_noop_when_not_holder_after_force_sync() {
         const LEASE_NAME: &str = "release-conflict-resync-test";
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
@@ -1605,6 +1633,67 @@ mod tests {
         // B still holds the lock.
         manager_b.state.write().await.sync(LeaseLockOpts::Force).await.unwrap();
         assert!(manager_b.is_holder().await);
+
+        manager_b.state.read().await.delete().await.unwrap();
+    }
+
+    /// Targeted regression test for the `watcher_step` expired-lock fix.
+    ///
+    /// Scenario: B holds a fresh, valid lock. A's local state is stale — it still sees
+    /// B's lock as expired (the exact race condition that caused the original flakiness).
+    /// A's `watcher_step` enters the expired-lock branch and calls `release(Soft)`.
+    /// Inside `state::release(Soft)`: `sync(Force)` runs and observes B's live lock.
+    /// The condition `is_holder(A) || is_expired()` is false with Soft opts → patch is
+    /// skipped. B's lock must survive intact.
+    ///
+    /// Before the fix, `release(Force)` was used here, which has `opts == Force` in the
+    /// condition — always true — so A would have stolen B's valid lock.
+    #[tokio::test]
+    #[ignore = "needs docker"]
+    async fn release_soft_skips_patch_when_fresh_lock_exists() {
+        const LEASE_NAME: &str = "release-soft-skips-fresh-lock-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
+        let mut managers = setup_simple_managers_vec(LEASE_NAME, 2, true).await;
+        let manager_b = managers.pop().unwrap();
+        let manager_a = managers.pop().unwrap();
+
+        // B acquires a fresh lock.
+        manager_b
+            .state
+            .write()
+            .await
+            .lock(&manager_b.params, LeaseLockOpts::Soft)
+            .await
+            .unwrap();
+        assert!(manager_b.is_holder().await);
+        assert!(!manager_b.state.read().await.is_expired());
+
+        // Forge A's stale local state: A thinks B's lock is already expired.
+        {
+            let mut a_state = manager_a.state.write().await;
+            a_state.holder = Some(manager_b.params.identity.clone());
+            a_state.expiry = SystemTime::now().checked_sub(Duration::from_secs(1)).unwrap();
+        }
+
+        // A calls release(Soft) — the path taken by watcher_step() for expired-lock cleanup.
+        // state::release(Soft): sync(Force) sees B's non-expired lock →
+        //   is_holder(A)=false, is_expired()=false, opts=Soft → condition is false → no patch.
+        manager_a
+            .state
+            .write()
+            .await
+            .release(&manager_a.params, LeaseLockOpts::Soft)
+            .await
+            .unwrap();
+
+        // B still holds the lock — A's stale-state release was correctly a no-op.
+        manager_b.state.write().await.sync(LeaseLockOpts::Force).await.unwrap();
+        assert!(
+            manager_b.is_holder().await,
+            "B's fresh lock must not be cleared by A's stale-state release(Soft)"
+        );
+        assert!(!manager_b.state.read().await.is_expired());
 
         manager_b.state.read().await.delete().await.unwrap();
     }

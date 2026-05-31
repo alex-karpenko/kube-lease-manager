@@ -163,6 +163,10 @@ impl LeaseState {
     }
 
     pub(crate) async fn lock(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<(), LeaseStateError> {
+        // Soft skips the sync when local state is not expired (holder-renewal path).
+        // This is intentional: lock() always ends with sync(Force), keeping resource_version
+        // current after each successful call. A stale RV from a concurrent Force-steal surfaces
+        // as LockConflict, which the caller (changed()) handles with a force-sync and backoff.
         self.sync(opts).await?;
 
         let lease_duration_seconds = params.duration;
@@ -204,6 +208,9 @@ impl LeaseState {
                 },
             })
         } else if opts == LeaseLockOpts::Force {
+            // Unlike the old SSA approach (which was truly unconditional), Merge patches
+            // carry resourceVersion for OCC: a concurrent patch between sync and this PATCH
+            // yields LockConflict, so callers must handle and retry with a fresh sync.
             trace!("try to force re-lock locked lease");
             serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
@@ -760,6 +767,7 @@ mod tests {
         assert!(states[0].holder.is_none());
         assert_eq!(states[0].transitions, 0);
         assert!(states[0].is_expired());
+        assert!(states[0].resource_version.is_none(), "resource_version must be cleared after NonexistentLease");
     }
 
     #[tokio::test]
@@ -799,6 +807,54 @@ mod tests {
         let result = states[1].patch(&params[1], &patch).await;
         assert!(result.is_err());
         assert!(matches!(result, Err(LeaseStateError::LockConflict)));
+
+        states[0].delete().await.unwrap();
+    }
+
+    /// Verifies that two states racing for an orphaned lease produce exactly one winner.
+    ///
+    /// Both states sync to the same resourceVersion. State 0 acquires first (advancing the RV in
+    /// K8s). State 1 then attempts to acquire with the now-stale RV — K8s must return 409
+    /// → LockConflict. After state 1 re-syncs it correctly observes state 0 as the holder.
+    ///
+    /// This directly tests the OCC property that prevents double-acquisition of an orphaned lease.
+    #[tokio::test]
+    #[ignore = "needs docker"]
+    async fn concurrent_soft_lock_occ_prevents_double_acquisition() {
+        const LEASE_NAME: &str = "concurrent-soft-lock-occ-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, true).await;
+
+        // Both states observe the same resourceVersion for the orphaned lease.
+        states[0].sync(LeaseLockOpts::Force).await.unwrap();
+        states[1].sync(LeaseLockOpts::Force).await.unwrap();
+        assert_eq!(states[0].resource_version, states[1].resource_version, "both must start with the same RV");
+        assert!(!states[0].is_locked());
+        assert!(!states[1].is_locked());
+
+        // Freeze states[1]'s local expiry so sync(Soft) is skipped inside lock(Soft),
+        // preserving the stale RV. This replicates the race window: states[1] believes
+        // it has fresh state while states[0] sneaks in ahead and advances the K8s RV.
+        states[1].expiry = SystemTime::now().checked_add(Duration::from_secs(60)).unwrap();
+
+        // States[0] acquires the orphaned lease — K8s RV advances.
+        states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
+        assert!(states[0].is_holder(&params[0].identity));
+        assert!(!states[0].is_expired());
+
+        // States[1] tries to acquire with the now-stale RV (sync skipped due to fake expiry).
+        // K8s must reject with 409 → LockConflict.
+        let result = states[1].lock(&params[1], LeaseLockOpts::Soft).await;
+        assert!(
+            matches!(result, Err(LeaseStateError::LockConflict)),
+            "stale-RV acquisition must fail with LockConflict, got: {result:?}"
+        );
+
+        // After re-sync, states[1] must see states[0] as the current holder.
+        states[1].sync(LeaseLockOpts::Force).await.unwrap();
+        assert!(states[1].is_holder(&params[0].identity));
+        assert!(!states[1].is_expired());
 
         states[0].delete().await.unwrap();
     }
