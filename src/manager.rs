@@ -816,15 +816,18 @@ mod tests {
     use std::collections::HashSet;
     use tokio::{join, select};
 
-    async fn setup_simple_managers_vec(lease_name: &str, count: usize, create_lease: bool) -> Vec<LeaseManager> {
-        const LEASE_DURATION_SECONDS: DurationSeconds = 2;
-        const LEASE_GRACE_SECONDS: DurationSeconds = 1;
-
+    async fn setup_custom_managers_vec(
+        lease_name: &str,
+        count: usize,
+        create_lease: bool,
+        duration: DurationSeconds,
+        grace: DurationSeconds,
+    ) -> Vec<LeaseManager> {
         let client = init().await;
         let mut managers = vec![];
 
         for i in 0..count {
-            let param = LeaseParams::new(format!("leader-{i}"), LEASE_DURATION_SECONDS, LEASE_GRACE_SECONDS);
+            let param = LeaseParams::new(format!("leader-{i}"), duration, grace);
             let manager = LeaseManager::new(
                 client.clone(),
                 lease_name,
@@ -848,6 +851,10 @@ mod tests {
                 .unwrap();
         }
         managers
+    }
+
+    async fn setup_simple_managers_vec(lease_name: &str, count: usize, create_lease: bool) -> Vec<LeaseManager> {
+        setup_custom_managers_vec(lease_name, count, create_lease, 2, 1).await
     }
 
     #[test]
@@ -1072,7 +1079,7 @@ mod tests {
         const MANAGERS: usize = 100;
         let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
 
-        let mut managers = setup_simple_managers_vec(LEASE_NAME, MANAGERS, true).await;
+        let mut managers = setup_custom_managers_vec(LEASE_NAME, MANAGERS, true, 5, 2).await;
 
         for manager in &managers {
             assert!(!manager.is_leader.load(Ordering::Relaxed));
