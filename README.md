@@ -28,7 +28,7 @@ Some of the typical use cases:
   fully automated or partially manual lock control.
 * Uses `resourceVersion`-based Optimistic Concurrency Control (OCC)
   approach for conflict detection on lease state update. That facilitates conflict detection and resolution
-  and makes impossible concurrent locking.
+  and makes impossible concurrent locking. This approach is well described in [this article](https://oneuptime.com/blog/post/2026-02-09-optimistic-concurrency-resourceversion/view).
 * Tolerates configurable time skew between nodes of the Kubernetes cluster.
 * Behavioral parameters of the lease manager are easily and flexibly configurable.
 * Uses well-known and highly appreciated [kube](https://crates.io/crates/kube)
