@@ -1,4 +1,4 @@
-use rand::{Rng, rng};
+use rand::{RngExt, rng};
 use std::time::Duration;
 use tracing::trace;
 
