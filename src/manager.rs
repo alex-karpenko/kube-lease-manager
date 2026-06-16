@@ -4,7 +4,7 @@ use crate::{
     state::{LeaseLockOpts, LeaseState, LeaseStateError},
 };
 use kube::Client;
-use rand::{Rng, distr::Alphanumeric, rng};
+use rand::{RngExt, distr::Alphanumeric, rng};
 use std::{
     fmt::Debug,
     sync::atomic::{AtomicBool, Ordering},

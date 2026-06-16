@@ -20,8 +20,8 @@ jobs:
           - beta
           - 1.88.0
         k8s:
-          - v1.31
-          - v1.34
+          - v1.32
+          - v1.35
           - latest
 
     steps:
