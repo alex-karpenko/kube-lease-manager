@@ -18,14 +18,14 @@ jobs:
         rust:
           - stable
           - beta
-          - 1.88.0
+          - 1.89.0
         k8s:
-          - v1.32
-          - v1.35
+          - v1.33
+          - v1.36
           - latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         name: Setup toolchain
         with:
@@ -62,6 +62,6 @@ jobs:
     needs: ci
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
