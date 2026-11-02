@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.1] - 2026-11-02
+### Details
+#### Fixed
+- Update k3s test images to latest tags, default Kube version to v1.37 by @alex-karpenko in [#37](https://github.com/alex-karpenko/kube-lease-manager/pull/37)
+
 ## [0.13.0] - 2026-11-02
 ### Details
 #### Breaking changes
@@ -140,6 +145,7 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.13.1]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.13.0..v0.13.1
 [0.13.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.12.0..v0.13.0
 [0.12.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.11.1..v0.12.0
 [0.11.1]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.11.0..v0.11.1
