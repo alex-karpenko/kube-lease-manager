@@ -4,16 +4,9 @@ db-urls = ["https://github.com/rustsec/advisory-db"]
 yanked = "deny"
 
 [licenses]
-allow = ["MIT", "Apache-2.0", "ISC", "BSD-3-Clause"]
+allow = ["MIT", "Apache-2.0", "ISC", "BSD-3-Clause", "CDLA-Permissive-2.0"]
 confidence-threshold = 0.93
-exceptions = [
-    { allow = [
-        "Zlib",
-    ], name = "foldhash" },
-    { allow = [
-        "Unicode-3.0",
-    ], name = "unicode-ident" },
-]
+exceptions = [{ allow = ["Zlib"], name = "foldhash" }, { allow = ["Unicode-3.0"], name = "unicode-ident" }]
 
 [licenses.private]
 ignore = false

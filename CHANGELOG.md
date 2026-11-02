@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.0] - 2026-11-02
+### Details
+#### Breaking changes
+- Update kube/v5.0, k8s-openapi/v0.29 dependencies, MSRV/1.89, MK8SV/v1.33 by @alex-karpenko in [#36](https://github.com/alex-karpenko/kube-lease-manager/pull/36)
+
+#### Changed
+
+## [0.12.0] - 2026-06-16
+### Details
+#### Breaking changes
+- Update kube/v4.0, k8s-openapi/v0.28, rand/0.10 dependencies, MK8SV/v1.32 by @alex-karpenko in [#35](https://github.com/alex-karpenko/kube-lease-manager/pull/35)
+
+#### Changed
+- Replace external Kubernetes dependency with testcontainers-managed k3s cluster for tests by @alex-karpenko in [#34](https://github.com/alex-karpenko/kube-lease-manager/pull/34)
+
 ## [0.11.1] - 2026-01-23
 ### Details
 #### Fixed
@@ -9,8 +24,6 @@ All notable changes to this project will be documented in this file.
 
 ## New Contributors
 * @nicolas-vivot made their first contribution in [#31](https://github.com/alex-karpenko/kube-lease-manager/pull/31)
-
-* @alex-karpenko made their first contribution
 
 ## [0.11.0] - 2026-01-17
 ### Details
@@ -127,6 +140,8 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.13.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.12.0..v0.13.0
+[0.12.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.11.1..v0.12.0
 [0.11.1]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.11.0..v0.11.1
 [0.11.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.10.0..v0.11.0
 [0.10.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.9.0..v0.10.0
