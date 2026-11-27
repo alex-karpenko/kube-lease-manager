@@ -26,6 +26,8 @@ pub(crate) struct LeaseState {
     pub(crate) expiry: SystemTime,
     /// Transitions count.
     transitions: i32,
+    /// Last observed resourceVersion, used for optimistic concurrency control.
+    resource_version: Option<String>,
 }
 
 /// Represents `kube-lease` specific errors.
@@ -62,7 +64,7 @@ pub enum LeaseStateError {
 const INCONSISTENT_LEASE_HOLDER_IDENTITY_PREFIX: &str = "inconsistent-identity-";
 
 /// Options to use for operations with lock.
-#[derive(Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum LeaseLockOpts {
     #[default]
     Soft,
@@ -85,6 +87,7 @@ impl LeaseState {
             holder: None,
             expiry: SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap(),
             transitions: 0,
+            resource_version: None,
         };
 
         state.create(create_mode).await?;
@@ -122,18 +125,21 @@ impl LeaseState {
                 self.holder = None;
                 self.transitions = 0;
                 self.expiry = SystemTime::now().checked_sub(Duration::from_nanos(1)).unwrap();
+                self.resource_version = None;
 
                 return Err(result.err().unwrap());
             }
 
-            // If success or non-404 - try to unwrap spec and do sync
-            let result = result?;
-            if let Some(lease) = result.spec {
-                self.holder = lease.holder_identity;
-                self.transitions = lease.lease_transitions.unwrap_or(0);
+            let lease = result?;
+            // Always capture the latest resourceVersion for OCC patches.
+            self.resource_version = lease.metadata.resource_version.clone();
+
+            if let Some(spec) = lease.spec {
+                self.holder = spec.holder_identity;
+                self.transitions = spec.lease_transitions.unwrap_or(0);
                 self.expiry = {
-                    let renew = lease.renew_time;
-                    let duration = lease
+                    let renew = spec.renew_time;
+                    let duration = spec
                         .lease_duration_seconds
                         .map(|d| Duration::from_secs(d as DurationSeconds));
 
@@ -157,55 +163,42 @@ impl LeaseState {
     }
 
     pub(crate) async fn lock(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<(), LeaseStateError> {
-        self.sync(LeaseLockOpts::Soft).await?;
+        // Soft skips the sync when local state is not expired (holder-renewal path).
+        // This is intentional: lock() always ends with sync(Force), keeping resource_version
+        // current after each successful call. A stale RV from a concurrent Force-steal surfaces
+        // as LockConflict, which the caller (changed()) handles with a force-sync and backoff.
+        self.sync(opts).await?;
 
         let lease_duration_seconds = params.duration;
         let now = Timestamp::now();
 
-        // if we're the holder - refresh the lease
-        let patch = if self.is_holder(&params.identity) {
-            // if we're the holder - refresh the lease
-            trace!("update our own lease");
-            let patch = serde_json::json!({
-                "apiVersion": "coordination.k8s.io/v1",
-                "kind": "Lease",
-                "spec": {
-                    "renewTime": MicroTime(now),
-                    "leaseDurationSeconds": lease_duration_seconds,
-                },
-            });
-            Patch::Strategic(patch)
-        } else if !self.is_locked() {
-            // if the lock is orphaned - try to lock it softly
-            trace!("try to lock orphaned lease");
-            let patch = serde_json::json!({
-                "apiVersion": "coordination.k8s.io/v1",
-                "kind": "Lease",
-                "spec": {
-                    "acquireTime": MicroTime(now),
-                    "renewTime": MicroTime(now),
-                    "holderIdentity": params.identity,
-                    "leaseDurationSeconds": lease_duration_seconds,
-                },
-            });
-            let patch = Patch::Apply(patch);
-            self.patch(params, &patch).await?;
+        // Build metadata carrying the resourceVersion precondition for OCC.
+        // Absent resourceVersion means unconditional write (only on first-ever sync).
+        let meta = match &self.resource_version {
+            Some(rv) => serde_json::json!({ "resourceVersion": rv }),
+            None => serde_json::json!({}),
+        };
 
-            trace!("locked successfully, increase transitions counter");
-            let patch = serde_json::json!({
+        let patch = if self.is_holder(&params.identity) {
+            trace!("update our own lease");
+            serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
+                "metadata": meta,
                 "spec": {
-                    "leaseTransitions": self.transitions + 1,
+                    "renewTime": MicroTime(now),
+                    "leaseDurationSeconds": lease_duration_seconds,
                 },
-            });
-            Patch::Strategic(patch)
-        } else if opts == LeaseLockOpts::Force {
-            // if it's locked by someone else but force is requested - try to lock it with force
-            trace!("try to force re-lock locked lease");
-            let patch = serde_json::json!({
+            })
+        } else if !self.is_locked() {
+            // Acquire an orphaned lease atomically in a single Merge patch.
+            // The resourceVersion precondition ensures only one concurrent acquirer wins;
+            // the loser receives 409 → LockConflict → backoff.
+            trace!("try to lock orphaned lease");
+            serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
+                "metadata": meta,
                 "spec": {
                     "acquireTime": MicroTime(now),
                     "renewTime": MicroTime(now),
@@ -213,34 +206,59 @@ impl LeaseState {
                     "leaseDurationSeconds": lease_duration_seconds,
                     "leaseTransitions": self.transitions + 1,
                 },
-            });
-            Patch::Strategic(patch)
+            })
+        } else if opts == LeaseLockOpts::Force {
+            // Unlike the old SSA approach (which was truly unconditional), Merge patches
+            // carry resourceVersion for OCC: a concurrent patch between sync and this PATCH
+            // yields LockConflict, so callers must handle and retry with a fresh sync.
+            trace!("try to force re-lock locked lease");
+            serde_json::json!({
+                "apiVersion": "coordination.k8s.io/v1",
+                "kind": "Lease",
+                "metadata": meta,
+                "spec": {
+                    "acquireTime": MicroTime(now),
+                    "renewTime": MicroTime(now),
+                    "holderIdentity": params.identity,
+                    "leaseDurationSeconds": lease_duration_seconds,
+                    "leaseTransitions": self.transitions + 1,
+                },
+            })
         } else {
             return Ok(());
         };
 
+        let patch = Patch::Merge(patch);
         self.patch(params, &patch).await?;
         self.sync(LeaseLockOpts::Force).await
     }
 
     pub(crate) async fn release(&mut self, params: &LeaseParams, opts: LeaseLockOpts) -> Result<(), LeaseStateError> {
-        self.sync(LeaseLockOpts::Soft).await?;
+        // Force-sync before release to guarantee we hold the latest resourceVersion.
+        // Release is infrequent so the extra GET is acceptable.
+        self.sync(LeaseLockOpts::Force).await?;
 
         if self.is_holder(&params.identity) || self.is_expired() || opts == LeaseLockOpts::Force {
             debug!(?params, ?opts, "release lock");
 
+            let meta = match &self.resource_version {
+                Some(rv) => serde_json::json!({ "resourceVersion": rv }),
+                None => serde_json::json!({}),
+            };
+
             let patch = serde_json::json!({
                 "apiVersion": "coordination.k8s.io/v1",
                 "kind": "Lease",
+                "metadata": meta,
                 "spec": {
-                    "acquireTime": Option::<()>::None,
-                    "renewTime": Option::<()>::None,
-                    "holderIdentity": Option::<()>::None,
-                    "leaseDurationSeconds": Option::<()>::None,
+                    "acquireTime": null,
+                    "renewTime": null,
+                    "holderIdentity": null,
+                    "leaseDurationSeconds": null,
                 }
             });
 
-            let patch = Patch::Strategic(patch);
+            let patch = Patch::Merge(patch);
             self.patch(params, &patch).await?;
         }
 
@@ -255,7 +273,6 @@ impl LeaseState {
 
         let params = PatchParams {
             field_manager: Some(params.field_manager()),
-            // force: matches!(patch, Patch::Apply(_)),
             ..Default::default()
         };
 
@@ -750,6 +767,10 @@ mod tests {
         assert!(states[0].holder.is_none());
         assert_eq!(states[0].transitions, 0);
         assert!(states[0].is_expired());
+        assert!(
+            states[0].resource_version.is_none(),
+            "resource_version must be cleared after NonexistentLease"
+        );
     }
 
     #[tokio::test]
@@ -760,15 +781,22 @@ mod tests {
 
         let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, true).await;
 
-        // Lock lease ordinary
+        // Lock lease with states[0] and sync states[1] to the resulting resourceVersion.
         states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
         states[1].sync(LeaseLockOpts::Force).await.unwrap();
 
-        // if the lock is orphaned - try to lock it softly
+        // Capture states[1]'s current resourceVersion (before states[0] renews).
+        let stale_rv = states[1].resource_version.clone();
+
+        // Advance the resourceVersion by having states[0] renew its lock.
+        states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
+
+        // Now states[1] holds a stale resourceVersion; a Merge patch using it must conflict.
         let now = Timestamp::now();
         let patch = serde_json::json!({
             "apiVersion": "coordination.k8s.io/v1",
             "kind": "Lease",
+            "metadata": { "resourceVersion": stale_rv },
             "spec": {
                 "acquireTime": MicroTime(now),
                 "renewTime": MicroTime(now),
@@ -778,10 +806,61 @@ mod tests {
             },
         });
 
-        let patch = Patch::Apply(patch);
+        let patch = Patch::Merge(patch);
         let result = states[1].patch(&params[1], &patch).await;
         assert!(result.is_err());
         assert!(matches!(result, Err(LeaseStateError::LockConflict)));
+
+        states[0].delete().await.unwrap();
+    }
+
+    /// Verifies that two states racing for an orphaned lease produce exactly one winner.
+    ///
+    /// Both states sync to the same resourceVersion. State 0 acquires first (advancing the RV in
+    /// K8s). State 1 then attempts to acquire with the now-stale RV — K8s must return 409
+    /// → LockConflict. After state 1 re-syncs it correctly observes state 0 as the holder.
+    ///
+    /// This directly tests the OCC property that prevents double-acquisition of an orphaned lease.
+    #[tokio::test]
+    #[ignore = "needs docker"]
+    async fn concurrent_soft_lock_occ_prevents_double_acquisition() {
+        const LEASE_NAME: &str = "concurrent-soft-lock-occ-test";
+        let _dropper = LeaseDropper::new(LEASE_NAME, TEST_NAMESPACE);
+
+        let (params, mut states) = setup_simple_leaders_vec(LEASE_NAME, 2, true).await;
+
+        // Both states observe the same resourceVersion for the orphaned lease.
+        states[0].sync(LeaseLockOpts::Force).await.unwrap();
+        states[1].sync(LeaseLockOpts::Force).await.unwrap();
+        assert_eq!(
+            states[0].resource_version, states[1].resource_version,
+            "both must start with the same RV"
+        );
+        assert!(!states[0].is_locked());
+        assert!(!states[1].is_locked());
+
+        // Freeze states[1]'s local expiry so sync(Soft) is skipped inside lock(Soft),
+        // preserving the stale RV. This replicates the race window: states[1] believes
+        // it has fresh state while states[0] sneaks in ahead and advances the K8s RV.
+        states[1].expiry = SystemTime::now().checked_add(Duration::from_secs(60)).unwrap();
+
+        // States[0] acquires the orphaned lease — K8s RV advances.
+        states[0].lock(&params[0], LeaseLockOpts::Soft).await.unwrap();
+        assert!(states[0].is_holder(&params[0].identity));
+        assert!(!states[0].is_expired());
+
+        // States[1] tries to acquire with the now-stale RV (sync skipped due to fake expiry).
+        // K8s must reject with 409 → LockConflict.
+        let result = states[1].lock(&params[1], LeaseLockOpts::Soft).await;
+        assert!(
+            matches!(result, Err(LeaseStateError::LockConflict)),
+            "stale-RV acquisition must fail with LockConflict, got: {result:?}"
+        );
+
+        // After re-sync, states[1] must see states[0] as the current holder.
+        states[1].sync(LeaseLockOpts::Force).await.unwrap();
+        assert!(states[1].is_holder(&params[0].identity));
+        assert!(!states[1].is_expired());
 
         states[0].delete().await.unwrap();
     }
