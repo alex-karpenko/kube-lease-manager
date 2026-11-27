@@ -1,0 +1,6 @@
+[advisories]
+# TODO: temporary exclusions, remove once upstream dependencies are updated.
+ignore = [
+    "RUSTSEC-2026-0440", # astral-tokio-tar is unmaintained; transitive dev-dependency via testcontainers
+    "RUSTSEC-2026-0543", # chrono is unmaintained; transitive dev-dependency via testcontainers -> serde_with
+]

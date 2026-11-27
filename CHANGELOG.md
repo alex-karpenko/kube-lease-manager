@@ -2,6 +2,11 @@
 
 All notable changes to this project will be documented in this file.
 
+## [0.13.2] - 2026-11-27
+### Details
+#### Changed
+- Bump MSRV to 1.95 to update vulnerable dependencies by @alex-karpenko in [#38](https://github.com/alex-karpenko/kube-lease-manager/pull/38)
+
 ## [0.13.1] - 2026-11-02
 ### Details
 #### Fixed
@@ -145,6 +150,7 @@ All notable changes to this project will be documented in this file.
 ## New Contributors
 * @alex-karpenko made their first contribution
 
+[0.13.2]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.13.1..v0.13.2
 [0.13.1]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.13.0..v0.13.1
 [0.13.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.12.0..v0.13.0
 [0.12.0]: https://github.com/alex-karpenko/kube-lease-manager/compare/v0.11.1..v0.12.0
