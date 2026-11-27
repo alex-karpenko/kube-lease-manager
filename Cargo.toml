@@ -5,7 +5,6 @@ categories = ["api-bindings", "asynchronous"]
 description = "Ergonomic and reliable leader election using Kubernetes Lease API."
 edition = "2024"
 rust-version = "1.95.0"
-homepage = "https://github.com/alex-karpenko/kube-lease-manager"
 keywords = ["kubernetes", "async", "lease", "leader", "election"]
 license = "MIT"
 readme = "README.md"
